@@ -40,6 +40,8 @@ var OidcEnabled = false
 var WeChatAuthEnabled = false
 var TurnstileCheckEnabled = false
 var RegisterEnabled = true
+var RegistrationEnabledByConfig = env.Bool("REGISTER_ENABLED", true)
+var IPAOnly = env.Bool("IPA_ONLY", false)
 
 var EmailDomainRestrictionEnabled = false
 var EmailDomainWhitelist = []string{
@@ -78,6 +80,23 @@ var OidcWellKnown = ""
 var OidcAuthorizationEndpoint = ""
 var OidcTokenEndpoint = ""
 var OidcUserinfoEndpoint = ""
+
+var IPAEnabled = IPAOnly || env.Bool("IPA_ENABLED", false)
+var IPAURL = env.String("IPA_URL", "")
+var IPABaseDN = env.String("IPA_BASE_DN", "")
+var IPAUserBaseDN = env.String("IPA_USER_BASE_DN", "")
+var IPAUserMatch = env.String("IPA_USER_MATCH", "*")
+var IPAAdminGroupDN = env.String("IPA_ADMIN_GROUP_DN", "")
+var IPARootGroupDN = env.String("IPA_ROOT_GROUP_DN", "")
+var IPABindDN = env.String("IPA_BIND_DN", "")
+var IPABindSecret = env.String("IPA_BIND_PASSWORD", "")
+var IPAStartTLS = env.Bool("IPA_STARTTLS", false)
+var IPACACert = env.String("IPA_CA_CERT", "")
+var IPASyncFrequency = env.Int("IPA_SYNC_FREQUENCY", 5*60)
+
+func CanRegister() bool {
+	return RegistrationEnabledByConfig && RegisterEnabled && !IPAOnly
+}
 
 var WeChatServerAddress = ""
 var WeChatServerToken = ""

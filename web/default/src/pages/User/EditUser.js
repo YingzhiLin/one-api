@@ -19,6 +19,7 @@ const EditUser = () => {
     email: '',
     quota: 0,
     group: 'default',
+    ipa_uid: '',
   });
   const [groupOptions, setGroupOptions] = useState([]);
   const {
@@ -30,6 +31,7 @@ const EditUser = () => {
     email,
     quota,
     group,
+    ipa_uid,
   } = inputs;
   const handleInputChange = (e, { name, value }) => {
     setInputs((inputs) => ({ ...inputs, [name]: value }));
@@ -100,7 +102,7 @@ const EditUser = () => {
         <Card.Content>
           <Card.Header className='header'>{t('user.edit.title')}</Card.Header>
           <Form loading={loading} autoComplete='new-password'>
-            <Form.Field>
+            {!ipa_uid && <Form.Field>
               <Form.Input
                 label={t('user.edit.username')}
                 name='username'
@@ -109,8 +111,8 @@ const EditUser = () => {
                 value={username}
                 autoComplete='new-password'
               />
-            </Form.Field>
-            <Form.Field>
+            </Form.Field>}
+            {!ipa_uid && <Form.Field>
               <Form.Input
                 label={t('user.edit.password')}
                 name='password'
@@ -120,8 +122,8 @@ const EditUser = () => {
                 value={password}
                 autoComplete='new-password'
               />
-            </Form.Field>
-            <Form.Field>
+            </Form.Field>}
+            {!ipa_uid && <Form.Field>
               <Form.Input
                 label={t('user.edit.display_name')}
                 name='display_name'
@@ -130,7 +132,7 @@ const EditUser = () => {
                 value={display_name}
                 autoComplete='new-password'
               />
-            </Form.Field>
+            </Form.Field>}
             {userId && (
               <>
                 <Form.Field>

@@ -11,11 +11,26 @@ services:
     volumes:
       - ./data/oneapi:/data
       - ./logs:/app/logs
+      - ${IPA_CA_CERT_HOST_DIR:-./certs}:/run/one-api/certs:ro
     environment:
       - SQL_DSN=oneapi:123456@tcp(db:3306)/one-api  # 修改此行，或注释掉以使用 SQLite 作为数据库
       - REDIS_CONN_STRING=redis://redis
       - SESSION_SECRET=random_string  # 修改为随机字符串
       - TZ=Asia/Shanghai
+      - REGISTER_ENABLED=${REGISTER_ENABLED:-true}
+      - IPA_ENABLED=${IPA_ENABLED:-false}
+      - IPA_ONLY=${IPA_ONLY:-false}
+      - IPA_URL=${IPA_URL:-}
+      - IPA_BASE_DN=${IPA_BASE_DN:-}
+      - IPA_USER_BASE_DN=${IPA_USER_BASE_DN:-}
+      - IPA_USER_MATCH=${IPA_USER_MATCH:-*}
+      - IPA_ADMIN_GROUP_DN=${IPA_ADMIN_GROUP_DN:-}
+      - IPA_ROOT_GROUP_DN=${IPA_ROOT_GROUP_DN:-}
+      - IPA_BIND_DN=${IPA_BIND_DN:-}
+      - IPA_BIND_PASSWORD=${IPA_BIND_PASSWORD:-}
+      - IPA_STARTTLS=${IPA_STARTTLS:-false}
+      - IPA_CA_CERT=${IPA_CA_CERT:-}
+      - IPA_SYNC_FREQUENCY=${IPA_SYNC_FREQUENCY:-300}
 #      - NODE_TYPE=slave  # 多机部署时从节点取消注释该行
 #      - SYNC_FREQUENCY=60  # 需要定期从数据库加载数据时取消注释该行
 #      - FRONTEND_BASE_URL=https://openai.justsong.cn  # 多机部署时从节点取消注释该行

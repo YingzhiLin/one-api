@@ -1,5 +1,6 @@
 import PropTypes from 'prop-types';
 import { useState } from 'react';
+import { useSelector } from 'react-redux';
 
 import {
   Popover,
@@ -38,6 +39,7 @@ function renderRole(role) {
 
 export default function UsersTableRow({ item, manageUser, handleOpenModal, setModalUserId }) {
   const theme = useTheme();
+  const siteInfo = useSelector((state) => state.siteInfo);
   const [open, setOpen] = useState(null);
   const [openDelete, setOpenDelete] = useState(false);
   const [statusSwitch, setStatusSwitch] = useState(item.status);
@@ -77,7 +79,7 @@ export default function UsersTableRow({ item, manageUser, handleOpenModal, setMo
       <TableRow tabIndex={item.id}>
         <TableCell>{item.id}</TableCell>
 
-        <TableCell>{item.username}</TableCell>
+        <TableCell>{item.username}{item.ipa_uid && <Label color="primary" sx={{ ml: 1 }}>IPA</Label>}</TableCell>
 
         <TableCell>
           <Label>{item.group}</Label>
@@ -123,6 +125,7 @@ export default function UsersTableRow({ item, manageUser, handleOpenModal, setMo
         <TableCell>
           {' '}
           <TableSwitch id={`switch-${item.id}`} checked={statusSwitch === 1} onChange={handleStatus} />
+          {item.ipa_locked && <Label color="error" sx={{ ml: 1 }}>FreeIPA 锁定</Label>}
         </TableCell>
         <TableCell>
           <IconButton onClick={handleOpenMenu} sx={{ color: 'rgb(99, 115, 129)' }}>
@@ -141,7 +144,7 @@ export default function UsersTableRow({ item, manageUser, handleOpenModal, setMo
           sx: { width: 140 }
         }}
       >
-        {item.role !== 100 && (
+        {!siteInfo.ipa_login && !item.ipa_uid && item.role !== 100 && (
           <MenuItem
             onClick={() => {
               handleCloseMenu();
@@ -163,10 +166,10 @@ export default function UsersTableRow({ item, manageUser, handleOpenModal, setMo
           <IconEdit style={{ marginRight: '16px' }} />
           编辑
         </MenuItem>
-        <MenuItem onClick={handleDeleteOpen} sx={{ color: 'error.main' }}>
+        {!item.ipa_uid && <MenuItem onClick={handleDeleteOpen} sx={{ color: 'error.main' }}>
           <IconTrash style={{ marginRight: '16px' }} />
           删除
-        </MenuItem>
+        </MenuItem>}
       </Popover>
 
       <Dialog open={openDelete} onClose={handleDeleteClose}>

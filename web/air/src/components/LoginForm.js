@@ -51,7 +51,7 @@ const LoginForm = () => {
   };
 
   const onSubmitWeChatVerificationCode = async () => {
-    if (turnstileEnabled && turnstileToken === '') {
+    if (!status.ipa_only && turnstileEnabled && turnstileToken === '') {
       showInfo('请稍后几秒重试，Turnstile 正在检查用户环境！');
       return;
     }
@@ -75,13 +75,14 @@ const LoginForm = () => {
   }
 
   async function handleSubmit(e) {
-    if (turnstileEnabled && turnstileToken === '') {
+    if (!status.ipa_only && turnstileEnabled && turnstileToken === '') {
       showInfo('请稍后几秒重试，Turnstile 正在检查用户环境！');
       return;
     }
     setSubmitted(true);
     if (username && password) {
-      const res = await API.post(`/api/user/login?turnstile=${turnstileToken}`, {
+      const loginPath = status.ipa_only ? '/api/user/ipa/login' : '/api/user/login';
+      const res = await API.post(`${loginPath}?turnstile=${turnstileToken}`, {
         username,
         password
       });
@@ -152,20 +153,32 @@ const LoginForm = () => {
                     onChange={(value) => handleChange('password', value)}
                   />
 
-                  <Button theme="solid" style={{ width: '100%' }} type={'primary'} size="large"
+                  {!status.ipa_only && <Button theme="solid" style={{ width: '100%' }} type={'primary'} size="large"
                           htmlType={'submit'} onClick={handleSubmit}>
                     登录
-                  </Button>
+                  </Button>}
+                  {status.ipa_login && !status.ipa_only && <Button theme="solid" style={{ width: '100%', marginTop: 12 }} type={'primary'} size="large" onClick={async (e) => {
+                    e.preventDefault();
+                    const res = await API.post('/api/user/ipa/login', { username, password });
+                    const { success, message, data } = res.data;
+                    if (success) {
+                      userDispatch({ type: 'login', payload: data });
+                      localStorage.setItem('user', JSON.stringify(data));
+                      showSuccess('登录成功！');
+                      navigate('/token');
+                    } else showError(message);
+                  }}>使用 IPA 账号登录</Button>}
+                  {status.ipa_only && <Button theme="solid" style={{ width: '100%' }} type={'primary'} size="large" onClick={handleSubmit}>使用 IPA 账号登录</Button>}
                 </Form>
-                <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: 20 }}>
+                {!status.ipa_only && <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: 20 }}>
                   <Text>
-                    没有账号请先 <Link to="/register">注册账号</Link>
+                    {status.registration_enabled && <>没有账号请先 <Link to="/register">注册账号</Link></>}
                   </Text>
                   <Text>
                     忘记密码 <Link to="/reset">点击重置</Link>
                   </Text>
-                </div>
-                {status.github_oauth || status.wechat_login || status.telegram_oauth ? (
+                </div>}
+                {!status.ipa_only && (status.github_oauth || status.wechat_login || status.telegram_oauth) ? (
                   <>
                     <Divider margin="12px" align="center">
                       第三方登录

@@ -89,6 +89,9 @@ func getOidcUserInfoByCode(code string) (*OidcUser, error) {
 }
 
 func OidcAuth(c *gin.Context) {
+	if rejectOutsideIPA(c) {
+		return
+	}
 	ctx := c.Request.Context()
 	session := sessions.Default(c)
 	state := c.Query("state")
@@ -133,7 +136,7 @@ func OidcAuth(c *gin.Context) {
 			return
 		}
 	} else {
-		if config.RegisterEnabled {
+		if config.CanRegister() {
 			user.Email = oidcUser.Email
 			if oidcUser.PreferredUsername != "" {
 				user.Username = oidcUser.PreferredUsername

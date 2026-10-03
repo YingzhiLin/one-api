@@ -767,6 +767,7 @@
       "username": "Username / Email",
       "password": "Password",
       "button": "Login",
+      "ipa_button": "Login with IPA",
       "forgot_password": "Forgot password?",
       "reset_password": "Reset",
       "no_account": "No account?",

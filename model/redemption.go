@@ -36,6 +36,12 @@ func GetAllRedemptions(startIdx int, num int) ([]*Redemption, error) {
 	return redemptions, err
 }
 
+func CountRedemptions() (int64, error) {
+	var total int64
+	err := DB.Model(&Redemption{}).Count(&total).Error
+	return total, err
+}
+
 func SearchRedemptions(keyword string) (redemptions []*Redemption, err error) {
 	err = DB.Where("id = ? or name LIKE ?", keyword, keyword+"%").Find(&redemptions).Error
 	return redemptions, err

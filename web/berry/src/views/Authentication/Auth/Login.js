@@ -9,12 +9,14 @@ import AuthWrapper from '../AuthWrapper';
 import AuthCardWrapper from '../AuthCardWrapper';
 import AuthLogin from '../AuthForms/AuthLogin';
 import Logo from 'ui-component/Logo';
+import { useSelector } from 'react-redux';
 
 // ================================|| AUTH3 - LOGIN ||================================ //
 
 const Login = () => {
   const theme = useTheme();
   const matchDownSM = useMediaQuery(theme.breakpoints.down('md'));
+  const siteInfo = useSelector((state) => state.siteInfo);
 
   return (
     <AuthWrapper>
@@ -46,13 +48,13 @@ const Login = () => {
                   <Grid item xs={12}>
                     <Divider />
                   </Grid>
-                  <Grid item xs={12}>
+                  {siteInfo.registration_enabled && !siteInfo.ipa_only && <Grid item xs={12}>
                     <Grid item container direction="column" alignItems="center" xs={12}>
                       <Typography component={Link} to="/register" variant="subtitle1" sx={{ textDecoration: 'none' }}>
                         注册
                       </Typography>
                     </Grid>
-                  </Grid>
+                  </Grid>}
                 </Grid>
               </AuthCardWrapper>
             </Grid>

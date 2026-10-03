@@ -22,6 +22,9 @@ var DB *gorm.DB
 var LOG_DB *gorm.DB
 
 func CreateRootAccountIfNeed() error {
+	if config.IPAOnly {
+		return nil
+	}
 	var user User
 	//if user.Status != util.UserStatusEnabled {
 	if err := DB.First(&user).Error; err != nil {
@@ -211,8 +214,15 @@ func setDBConns(db *gorm.DB) *sql.DB {
 		return nil
 	}
 
-	sqlDB.SetMaxIdleConns(env.Int("SQL_MAX_IDLE_CONNS", 100))
-	sqlDB.SetMaxOpenConns(env.Int("SQL_MAX_OPEN_CONNS", 1000))
+	if db.Dialector.Name() == "sqlite" {
+		// Serialize SQLite access so directory sync and login cannot compete
+		// for write locks on separate connections in this process.
+		sqlDB.SetMaxIdleConns(1)
+		sqlDB.SetMaxOpenConns(1)
+	} else {
+		sqlDB.SetMaxIdleConns(env.Int("SQL_MAX_IDLE_CONNS", 100))
+		sqlDB.SetMaxOpenConns(env.Int("SQL_MAX_OPEN_CONNS", 1000))
+	}
 	sqlDB.SetConnMaxLifetime(time.Second * time.Duration(env.Int("SQL_MAX_LIFETIME", 60)))
 	return sqlDB
 }

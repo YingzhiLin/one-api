@@ -28,6 +28,9 @@ const config = {
     oidc_authorization_endpoint: '',
     oidc_token_endpoint: '',
     oidc_userinfo_endpoint: '',
+    ipa_login: false,
+    ipa_only: false,
+    registration_enabled: true,
   }
 };
 

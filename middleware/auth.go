@@ -5,7 +5,9 @@ import (
 	"github.com/gin-contrib/sessions"
 	"github.com/gin-gonic/gin"
 	"github.com/songquanpeng/one-api/common/blacklist"
+	"github.com/songquanpeng/one-api/common/config"
 	"github.com/songquanpeng/one-api/common/ctxkey"
+	"github.com/songquanpeng/one-api/common/ipa"
 	"github.com/songquanpeng/one-api/common/network"
 	"github.com/songquanpeng/one-api/model"
 	"net/http"
@@ -45,6 +47,57 @@ func authHelper(c *gin.Context, minRole int) {
 			return
 		}
 	}
+	if config.IPAOnly || (config.IPAEnabled && minRole >= model.RoleAdminUser) {
+		userId, ok := id.(int)
+		if !ok {
+			c.JSON(http.StatusUnauthorized, gin.H{"success": false, "message": "登录状态无效，请重新登录"})
+			c.Abort()
+			return
+		}
+		localUser, err := model.GetUserById(userId, false)
+		if err != nil || (config.IPAOnly && localUser.IPAEntryUUID == "") {
+			c.JSON(http.StatusForbidden, gin.H{"success": false, "message": "系统仅允许使用 FreeIPA 账号"})
+			c.Abort()
+			return
+		}
+		if config.IPAOnly {
+			username = localUser.Username
+			role = localUser.Role
+			status = localUser.Status
+			if session.Get("username") != nil {
+				session.Set("role", role)
+				session.Set("status", status)
+				_ = session.Save()
+			}
+		}
+		if config.IPAEnabled && minRole >= model.RoleAdminUser {
+			if localUser.IPAEntryUUID == "" {
+				c.JSON(http.StatusForbidden, gin.H{"success": false, "message": "管理员权限必须由 FreeIPA 管理员组授予"})
+				c.Abort()
+				return
+			}
+			directoryUser, err := ipa.LookupByUID(localUser.IPAUid)
+			if err != nil || directoryUser.EntryUUID != localUser.IPAEntryUUID {
+				c.JSON(http.StatusForbidden, gin.H{"success": false, "message": "无法验证 FreeIPA 管理员身份"})
+				c.Abort()
+				return
+			}
+			localUser, err = model.SyncIPAUser(directoryUser)
+			if err != nil || localUser.Role < minRole {
+				c.JSON(http.StatusForbidden, gin.H{"success": false, "message": "FreeIPA 管理员组成员资格已失效"})
+				c.Abort()
+				return
+			}
+			role = localUser.Role
+			status = localUser.Status
+			username = localUser.Username
+			if session.Get("username") != nil {
+				session.Set("role", role)
+				session.Set("status", status)
+				_ = session.Save()
+			}
+		}
+	}
 	if status.(int) == model.UserStatusDisabled || blacklist.IsUserBanned(id.(int)) {
 		c.JSON(http.StatusOK, gin.H{
 			"success": false,
@@ -55,6 +108,14 @@ func authHelper(c *gin.Context, minRole int) {
 		_ = session.Save()
 		c.Abort()
 		return
+	}
+	if config.IPAEnabled {
+		userEnabled, err := model.IsUserEnabled(id.(int))
+		if err != nil || !userEnabled {
+			c.JSON(http.StatusForbidden, gin.H{"success": false, "message": "用户在本系统或 FreeIPA 中已被禁用"})
+			c.Abort()
+			return
+		}
 	}
 	if role.(int) < minRole {
 		c.JSON(http.StatusOK, gin.H{
@@ -100,6 +161,13 @@ func TokenAuth() func(c *gin.Context) {
 		if err != nil {
 			abortWithMessage(c, http.StatusUnauthorized, err.Error())
 			return
+		}
+		if config.IPAOnly {
+			user, err := model.GetUserById(token.UserId, false)
+			if err != nil || user.IPAEntryUUID == "" {
+				abortWithMessage(c, http.StatusForbidden, "系统仅允许使用 FreeIPA 账号")
+				return
+			}
 		}
 		if token.Subnet != nil && *token.Subnet != "" {
 			if !network.IsIpInSubnets(ctx, c.ClientIP(), *token.Subnet) {

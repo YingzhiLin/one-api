@@ -51,7 +51,7 @@ const LoginForm = ({ ...others }) => {
   // const [checked, setChecked] = useState(true);
 
   let tripartiteLogin = false;
-  if (siteInfo.github_oauth || siteInfo.wechat_login || siteInfo.lark_client_id || siteInfo.oidc) {
+  if (!siteInfo.ipa_only && (siteInfo.github_oauth || siteInfo.wechat_login || siteInfo.lark_client_id || siteInfo.oidc)) {
     tripartiteLogin = true;
   }
 
@@ -213,7 +213,7 @@ const LoginForm = ({ ...others }) => {
           password: Yup.string().max(255).required('Password is required')
         })}
         onSubmit={async (values, { setErrors, setStatus, setSubmitting }) => {
-          const { success, message } = await login(values.username, values.password);
+          const { success, message } = await login(values.username, values.password, siteInfo.ipa_only);
           if (success) {
             setStatus({ success: true });
           } else {
@@ -283,7 +283,7 @@ const LoginForm = ({ ...others }) => {
                 }
                 label="记住我"
               /> */}
-              <Typography
+              {!siteInfo.ipa_only && <Typography
                 component={Link}
                 to="/reset"
                 variant="subtitle1"
@@ -291,7 +291,7 @@ const LoginForm = ({ ...others }) => {
                 sx={{ textDecoration: 'none', cursor: 'pointer' }}
               >
                 忘记密码?
-              </Typography>
+              </Typography>}
             </Stack>
             {errors.submit && (
               <Box sx={{ mt: 3 }}>
@@ -301,11 +301,20 @@ const LoginForm = ({ ...others }) => {
 
             <Box sx={{ mt: 2 }}>
               <AnimateButton>
-                <Button disableElevation disabled={isSubmitting} fullWidth size="large" type="submit" variant="contained" color="primary">
+                {!siteInfo.ipa_only ? <Button disableElevation disabled={isSubmitting} fullWidth size="large" type="submit" variant="contained" color="primary">
                   登录
+                </Button> : <Button disableElevation disabled={isSubmitting} fullWidth size="large" type="submit" variant="contained" color="primary">
+                  使用 IPA 账号登录
                 </Button>
+                }
               </AnimateButton>
             </Box>
+            {siteInfo.ipa_login && !siteInfo.ipa_only && <Box sx={{ mt: 2 }}>
+              <Button disableElevation disabled={isSubmitting} fullWidth size="large" type="button" variant="outlined" onClick={async () => {
+                const { success, message } = await login(values.username, values.password, true);
+                if (!success && message) setErrors({ submit: message });
+              }}>使用 IPA 账号登录</Button>
+            </Box>}
           </form>
         )}
       </Formik>
