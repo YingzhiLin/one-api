@@ -1,0 +1,19 @@
+[Unit]
+Description=One API with optional FreeIPA authentication (user service)
+
+[Service]
+Type=simple
+WorkingDirectory=%h/.config/one-api/project
+# Start with a clean environment so application settings come from .env.
+ExecStart=/usr/bin/env -i HOME=%h PATH=/usr/local/bin:/usr/bin:/bin %h/.config/one-api/project/one-api --log-dir ./logs
+Restart=on-failure
+RestartSec=5s
+TimeoutStopSec=30s
+UMask=0027
+NoNewPrivileges=true
+PrivateTmp=true
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=default.target

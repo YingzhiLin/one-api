@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useContext, useEffect, useState } from 'react';
 import {
   Button,
   Form,
@@ -9,13 +9,19 @@ import {
   Card,
   Divider,
 } from 'semantic-ui-react';
-import { Link, useNavigate } from 'react-router-dom';
+import { Link, Navigate, useNavigate } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import { API, getLogo, showError, showInfo, showSuccess } from '../helpers';
 import Turnstile from 'react-turnstile';
+import { StatusContext } from '../context/Status';
+import Loading from './Loading';
 
 const RegisterForm = () => {
   const { t } = useTranslation();
+  const [statusState] = useContext(StatusContext);
+  const status = statusState.status;
+  const registrationAllowed =
+    status?.registration_enabled === true && !status?.ipa_only;
   const [inputs, setInputs] = useState({
     username: '',
     password: '',
@@ -38,16 +44,12 @@ const RegisterForm = () => {
   }
 
   useEffect(() => {
-    let status = localStorage.getItem('status');
     if (status) {
-      status = JSON.parse(status);
       setShowEmailVerification(status.email_verification);
-      if (status.turnstile_check) {
-        setTurnstileEnabled(true);
-        setTurnstileSiteKey(status.turnstile_site_key);
-      }
+      setTurnstileEnabled(Boolean(status.turnstile_check));
+      setTurnstileSiteKey(status.turnstile_site_key || '');
     }
-  });
+  }, [status]);
 
   useEffect(() => {
     let countdownInterval = null;
@@ -66,11 +68,12 @@ const RegisterForm = () => {
 
   function handleChange(e) {
     const { name, value } = e.target;
-    console.log(name, value);
     setInputs((inputs) => ({ ...inputs, [name]: value }));
   }
 
   async function handleSubmit(e) {
+    e.preventDefault();
+    if (!registrationAllowed) return;
     if (password.length < 8) {
       showInfo(t('messages.error.password_length'));
       return;
@@ -105,6 +108,7 @@ const RegisterForm = () => {
   }
 
   const sendVerificationCode = async () => {
+    if (!registrationAllowed) return;
     if (inputs.email === '') return;
     if (turnstileEnabled && turnstileToken === '') {
       showInfo(t('messages.error.turnstile_wait'));
@@ -125,6 +129,9 @@ const RegisterForm = () => {
     }
     setLoading(false);
   };
+
+  if (!status) return <Loading />;
+  if (!registrationAllowed) return <Navigate to='/login' replace />;
 
   return (
     <Grid textAlign='center' style={{ marginTop: '48px' }}>

@@ -332,7 +332,7 @@ Nginx 将网站页面、`/api/` 和 `/v1/` 转发到 `http://127.0.0.1:3000`；F
 
 ## 9. Ubuntu 24.04：使用 systemctl 直接管理应用
 
-本节适用于 Ubuntu 24.04，以 systemd 直接运行编译后的 Go 程序。Node.js 用于前端构建，运行服务不依赖 PM2。本节的服务文件和部署步骤已编写，尚未在本机安装启用或执行重启验证；本机现有服务仍由 PM2 管理。
+本节适用于 Ubuntu 24.04，以 systemd 直接运行编译后的 Go 程序。Node.js 用于前端构建，运行服务不依赖 PM2。9.1–9.5 使用专用系统账号部署，需管理员 sudo 权限；9.6 提供保留克隆目录的用户服务方式。2026-10-04 本机已使用 9.6 的方式从 PM2 切换到 systemd；专用系统账号方式尚未在本机实际安装。
 
 ### 9.1 服务账号与目录
 
@@ -476,6 +476,50 @@ sudo systemctl status one-api --no-pager
 ```
 
 运行目录与源码目录分开后，迁移电脑需要保存 `/etc/one-api`、`/var/lib/one-api`、必要日志与服务文件，不能仅复制克隆目录。权限问题可用 `namei -l /opt/one-api/.env` 查看目录和链接权限，并确认服务账号可读取配置及 CA、写入数据库和日志目录。
+
+### 9.6 保留克隆目录：使用用户级 systemd 服务
+
+需要保留源码目录中的 `.env`、CA、数据库和日志时，可使用当前部署用户运行服务。本方式没有专用账号隔离，应用具有部署用户的文件访问权限；常驻服务器可采用前述专用账号方式。两种服务方式选择一种，切换时先停止另一种实例。
+
+先完成构建，将 `ONE_API_DIR` 设置为克隆目录的绝对路径，并按 9.2 停止 PM2、备份数据库、删除 PM2 应用记录。然后安装项目提供的 [one-api-user.service](./deploy/systemd/one-api-user.service)：
+
+```bash
+mkdir -p "$HOME/.config/systemd/user" "$HOME/.config/one-api"
+chmod 700 "$HOME/.config/one-api"
+# 首次安装创建链接；若已存在，先核对其指向，不覆盖其他项目。
+ln -s "$ONE_API_DIR" "$HOME/.config/one-api/project"
+install -m 0644 "$ONE_API_DIR/deploy/systemd/one-api-user.service" \
+  "$HOME/.config/systemd/user/one-api.service"
+systemctl --user daemon-reload
+systemctl --user enable --now one-api
+systemctl --user status one-api --no-pager
+```
+
+服务使用 `$HOME/.config/one-api/project` 链接作为工作目录，直接读取项目 `.env`。保持原 `SQLITE_PATH`、`IPA_CA_CERT` 和 `PORT` 即可，相对路径依然相对于项目根目录。启动时清除继承的环境变量，避免用户管理器中的同名变量覆盖 `.env`。项目目录及数据库、日志须可由部署用户读写，`.env` 建议权限 600。启动链接和已安装的 unit 位于项目之外，其可重建的服务源文件保存在项目中。
+
+要在退出登录后持续运行，并在开机时启动用户管理器，检查并启用 linger：
+
+```bash
+loginctl show-user "$USER" -p Linger
+# 输出 Linger=no 时，由管理员执行：
+sudo loginctl enable-linger "$USER"
+```
+
+若输出已为 `Linger=yes`，无需重复启用。未启用 linger 时，用户服务随用户管理器生命周期运行，不能保证退出登录后的常驻与开机启动。安装用户服务本身不需要 sudo。
+
+日常管理使用当前部署用户执行，不加 sudo：
+
+```bash
+systemctl --user start one-api
+systemctl --user stop one-api
+systemctl --user restart one-api
+systemctl --user status one-api --no-pager
+systemctl --user is-enabled one-api
+journalctl --user -u one-api -n 100 --no-pager
+journalctl --user -u one-api -f
+```
+
+修改项目 `.env` 后执行 `systemctl --user restart one-api`。更新可执行文件时先停止服务，替换项目根目录的 `one-api`，再启动。修改服务源文件后重新 install 到用户服务目录，执行 daemon-reload 后重启。移动克隆目录或换电脑时重建 project 链接、安装 unit、检查 linger，再启动；不要让 PM2 同时恢复该应用。
 
 systemd 参数依据 Ubuntu 24.04 自带的 `man systemd.service`、`man systemd.exec`，服务账号创建参数见 `man useradd`。
 
