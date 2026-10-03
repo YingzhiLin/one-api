@@ -53,7 +53,8 @@ const originInputs = {
   display_name: '',
   password: '',
   group: 'default',
-  quota: 0
+  quota: 0,
+  ipa_uid: ''
 };
 
 const EditModal = ({ open, userId, onCancel, onOk }) => {
@@ -134,7 +135,7 @@ const EditModal = ({ open, userId, onCancel, onOk }) => {
         <Formik initialValues={inputs} enableReinitialize validationSchema={validationSchema} onSubmit={submit}>
           {({ errors, handleBlur, handleChange, handleSubmit, touched, values, isSubmitting }) => (
             <form noValidate onSubmit={handleSubmit}>
-              <FormControl fullWidth error={Boolean(touched.username && errors.username)} sx={{ ...theme.typography.otherInput }}>
+              {!values.ipa_uid && <FormControl fullWidth error={Boolean(touched.username && errors.username)} sx={{ ...theme.typography.otherInput }}>
                 <InputLabel htmlFor="channel-username-label">用户名</InputLabel>
                 <OutlinedInput
                   id="channel-username-label"
@@ -152,9 +153,9 @@ const EditModal = ({ open, userId, onCancel, onOk }) => {
                     {errors.username}
                   </FormHelperText>
                 )}
-              </FormControl>
+              </FormControl>}
 
-              <FormControl fullWidth error={Boolean(touched.display_name && errors.display_name)} sx={{ ...theme.typography.otherInput }}>
+              {!values.ipa_uid && <FormControl fullWidth error={Boolean(touched.display_name && errors.display_name)} sx={{ ...theme.typography.otherInput }}>
                 <InputLabel htmlFor="channel-display_name-label">显示名称</InputLabel>
                 <OutlinedInput
                   id="channel-display_name-label"
@@ -172,9 +173,9 @@ const EditModal = ({ open, userId, onCancel, onOk }) => {
                     {errors.display_name}
                   </FormHelperText>
                 )}
-              </FormControl>
+              </FormControl>}
 
-              <FormControl fullWidth error={Boolean(touched.password && errors.password)} sx={{ ...theme.typography.otherInput }}>
+              {!values.ipa_uid && <FormControl fullWidth error={Boolean(touched.password && errors.password)} sx={{ ...theme.typography.otherInput }}>
                 <InputLabel htmlFor="channel-password-label">密码</InputLabel>
                 <OutlinedInput
                   id="channel-password-label"
@@ -205,7 +206,7 @@ const EditModal = ({ open, userId, onCancel, onOk }) => {
                     {errors.password}
                   </FormHelperText>
                 )}
-              </FormControl>
+              </FormControl>}
 
               {values.is_edit && (
                 <>

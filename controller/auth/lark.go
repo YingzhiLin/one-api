@@ -81,6 +81,9 @@ func getLarkUserInfoByCode(code string) (*LarkUser, error) {
 }
 
 func LarkOAuth(c *gin.Context) {
+	if rejectOutsideIPA(c) {
+		return
+	}
 	ctx := c.Request.Context()
 	session := sessions.Default(c)
 	state := c.Query("state")
@@ -118,7 +121,7 @@ func LarkOAuth(c *gin.Context) {
 			return
 		}
 	} else {
-		if config.RegisterEnabled {
+		if config.CanRegister() {
 			user.Username = "lark_" + strconv.Itoa(model.GetMaxUserId()+1)
 			if larkUser.Name != "" {
 				user.DisplayName = larkUser.Name

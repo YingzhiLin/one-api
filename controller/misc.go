@@ -44,6 +44,9 @@ func GetStatus(c *gin.Context) {
 			"oidc_authorization_endpoint": config.OidcAuthorizationEndpoint,
 			"oidc_token_endpoint":         config.OidcTokenEndpoint,
 			"oidc_userinfo_endpoint":      config.OidcUserinfoEndpoint,
+			"ipa_login":                   config.IPAEnabled,
+			"ipa_only":                    config.IPAOnly,
+			"registration_enabled":        config.CanRegister(),
 		},
 	})
 	return
@@ -143,6 +146,10 @@ func SendEmailVerification(c *gin.Context) {
 }
 
 func SendPasswordResetEmail(c *gin.Context) {
+	if config.IPAOnly {
+		c.JSON(http.StatusOK, gin.H{"success": false, "message": "密码请在 FreeIPA 中修改"})
+		return
+	}
 	email := c.Query("email")
 	if err := common.Validate.Var(email, "required,email"); err != nil {
 		c.JSON(http.StatusOK, gin.H{
@@ -156,6 +163,10 @@ func SendPasswordResetEmail(c *gin.Context) {
 			"success": false,
 			"message": "该邮箱地址未注册",
 		})
+		return
+	}
+	if model.IsIPAEmail(email) {
+		c.JSON(http.StatusOK, gin.H{"success": false, "message": "FreeIPA 账号密码请在 FreeIPA 中修改"})
 		return
 	}
 	code := common.GenerateVerificationCode(0)

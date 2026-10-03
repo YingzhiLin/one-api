@@ -12,6 +12,7 @@ import (
 	"github.com/songquanpeng/one-api/common/blacklist"
 	"github.com/songquanpeng/one-api/common/config"
 	"github.com/songquanpeng/one-api/common/helper"
+	"github.com/songquanpeng/one-api/common/ipa"
 	"github.com/songquanpeng/one-api/common/logger"
 	"github.com/songquanpeng/one-api/common/random"
 )
@@ -43,6 +44,9 @@ type User struct {
 	WeChatId         string `json:"wechat_id" gorm:"column:wechat_id;index"`
 	LarkId           string `json:"lark_id" gorm:"column:lark_id;index"`
 	OidcId           string `json:"oidc_id" gorm:"column:oidc_id;index"`
+	IPAEntryUUID     string `json:"-" gorm:"column:ipa_entry_uuid;index"`
+	IPAUid           string `json:"ipa_uid" gorm:"column:ipa_uid;index"`
+	IPAAccountLocked bool   `json:"ipa_locked" gorm:"column:ipa_account_locked"`
 	VerificationCode string `json:"verification_code" gorm:"-:all"`                                    // this field is only for Email verification, don't save it to database!
 	AccessToken      string `json:"access_token" gorm:"type:char(32);column:access_token;uniqueIndex"` // this token is for system management
 	Quota            int64  `json:"quota" gorm:"bigint;default:0"`
@@ -59,8 +63,22 @@ func GetMaxUserId() int {
 	return user.Id
 }
 
+func listedUsersQuery() *gorm.DB {
+	query := DB.Model(&User{}).Omit("password").Where("status != ?", UserStatusDeleted)
+	if config.IPAOnly {
+		query = query.Where("COALESCE(ipa_entry_uuid, '') <> ''")
+	}
+	if config.IPAEnabled || config.IPAOnly {
+		query = query.Where("(COALESCE(ipa_entry_uuid, '') = '' OR LOWER(COALESCE(ipa_uid, '')) LIKE ? ESCAPE '!')", ipa.UserMatchSQLPattern())
+		if bindUID := ipa.BindUID(); bindUID != "" {
+			query = query.Where("(COALESCE(ipa_entry_uuid, '') = '' OR LOWER(COALESCE(ipa_uid, '')) <> ?)", strings.ToLower(bindUID))
+		}
+	}
+	return query
+}
+
 func GetAllUsers(startIdx int, num int, order string) (users []*User, err error) {
-	query := DB.Limit(num).Offset(startIdx).Omit("password").Where("status != ?", UserStatusDeleted)
+	query := listedUsersQuery().Limit(num).Offset(startIdx)
 
 	switch order {
 	case "quota":
@@ -77,11 +95,17 @@ func GetAllUsers(startIdx int, num int, order string) (users []*User, err error)
 	return users, err
 }
 
+func CountListedUsers() (int64, error) {
+	var total int64
+	err := listedUsersQuery().Count(&total).Error
+	return total, err
+}
+
 func SearchUsers(keyword string) (users []*User, err error) {
 	if !common.UsingPostgreSQL {
-		err = DB.Omit("password").Where("id = ? or username LIKE ? or email LIKE ? or display_name LIKE ?", keyword, keyword+"%", keyword+"%", keyword+"%").Find(&users).Error
+		err = listedUsersQuery().Where("(id = ? or username LIKE ? or ipa_uid LIKE ? or email LIKE ? or display_name LIKE ?)", keyword, keyword+"%", keyword+"%", keyword+"%", keyword+"%").Find(&users).Error
 	} else {
-		err = DB.Omit("password").Where("username LIKE ? or email LIKE ? or display_name LIKE ?", keyword+"%", keyword+"%", keyword+"%").Find(&users).Error
+		err = listedUsersQuery().Where("(username LIKE ? or ipa_uid LIKE ? or email LIKE ? or display_name LIKE ?)", keyword+"%", keyword+"%", keyword+"%", keyword+"%").Find(&users).Error
 	}
 	return users, err
 }
@@ -178,6 +202,9 @@ func (user *User) Update(updatePassword bool) error {
 		blacklist.UnbanUser(user.Id)
 	}
 	err = DB.Model(user).Updates(user).Error
+	if err == nil {
+		InvalidateUserEnabledCache(user.Id)
+	}
 	return err
 }
 
@@ -209,6 +236,9 @@ func (user *User) ValidateAndFill() (err error) {
 		if err != nil {
 			return errors.New("用户名或密码错误，或用户已被封禁")
 		}
+	}
+	if user.IPAEntryUUID != "" {
+		return errors.New("该账号必须通过 FreeIPA 登录")
 	}
 	okay := common.ValidatePasswordAndHash(password, user.Password)
 	if !okay || user.Status != UserStatusEnabled {
@@ -301,6 +331,9 @@ func ResetUserPasswordByEmail(email string, password string) error {
 	if email == "" || password == "" {
 		return errors.New("邮箱地址或密码为空！")
 	}
+	if IsIPAEmail(email) {
+		return errors.New("FreeIPA 账号密码请在 FreeIPA 中修改")
+	}
 	hashedPassword, err := common.Password2Hash(password)
 	if err != nil {
 		return err
@@ -309,15 +342,29 @@ func ResetUserPasswordByEmail(email string, password string) error {
 	return err
 }
 
+func IsIPAEmail(email string) bool {
+	if email == "" {
+		return false
+	}
+	return DB.Where("email = ? AND ipa_entry_uuid <> ''", email).Limit(1).Find(&User{}).RowsAffected > 0
+}
+
 func IsAdmin(userId int) bool {
 	if userId == 0 {
 		return false
 	}
 	var user User
-	err := DB.Where("id = ?", userId).Select("role").Find(&user).Error
+	err := DB.Where("id = ?", userId).Select("role", "ipa_entry_uuid", "ipa_uid").Find(&user).Error
 	if err != nil {
 		logger.SysError("no such user " + err.Error())
 		return false
+	}
+	if config.IPAEnabled {
+		if user.IPAEntryUUID == "" || user.IPAUid == "" {
+			return false
+		}
+		directoryUser, err := ipa.LookupByUID(user.IPAUid)
+		return err == nil && directoryUser.EntryUUID == user.IPAEntryUUID && !directoryUser.Locked && ipa.IsAdmin(directoryUser)
 	}
 	return user.Role >= RoleAdminUser
 }
@@ -327,11 +374,17 @@ func IsUserEnabled(userId int) (bool, error) {
 		return false, errors.New("user id is empty")
 	}
 	var user User
-	err := DB.Where("id = ?", userId).Select("status").Find(&user).Error
+	err := DB.Where("id = ?", userId).Select("status", "ipa_entry_uuid", "ipa_uid", "ipa_account_locked").Find(&user).Error
 	if err != nil {
 		return false, err
 	}
-	return user.Status == UserStatusEnabled, nil
+	if config.IPAOnly && user.IPAEntryUUID == "" {
+		return false, nil
+	}
+	if config.IPAEnabled && user.IPAEntryUUID != "" && (!ipa.MatchesUID(user.IPAUid) || ipa.IsBindUser(&ipa.User{UID: user.IPAUid})) {
+		return false, nil
+	}
+	return user.Status == UserStatusEnabled && (user.IPAEntryUUID == "" || !user.IPAAccountLocked), nil
 }
 
 func ValidateAccessToken(token string) (user *User) {

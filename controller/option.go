@@ -45,6 +45,11 @@ func UpdateOption(c *gin.Context) {
 		return
 	}
 	switch option.Key {
+	case "RegisterEnabled":
+		if option.Value == "true" && (!config.RegistrationEnabledByConfig || config.IPAOnly) {
+			c.JSON(http.StatusOK, gin.H{"success": false, "message": "新用户注册已由部署配置关闭"})
+			return
+		}
 	case "Theme":
 		if !config.ValidThemes[option.Value] {
 			c.JSON(http.StatusOK, gin.H{

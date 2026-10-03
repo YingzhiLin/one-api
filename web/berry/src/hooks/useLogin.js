@@ -7,9 +7,9 @@ import { showSuccess } from 'utils/common';
 const useLogin = () => {
   const dispatch = useDispatch();
   const navigate = useNavigate();
-  const login = async (username, password) => {
+  const login = async (username, password, useIPA = false) => {
     try {
-      const res = await API.post(`/api/user/login`, {
+      const res = await API.post(useIPA ? `/api/user/ipa/login` : `/api/user/login`, {
         username,
         password
       });

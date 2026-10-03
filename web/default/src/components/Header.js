@@ -1,6 +1,7 @@
 import React, { useContext, useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { UserContext } from '../context/User';
+import { StatusContext } from '../context/Status';
 import { useTranslation } from 'react-i18next';
 
 import {
@@ -84,6 +85,10 @@ if (localStorage.getItem('chat_link')) {
 const Header = () => {
   const { t, i18n } = useTranslation();
   const [userState, userDispatch] = useContext(UserContext);
+  const [statusState] = useContext(StatusContext);
+  const registrationAllowed =
+    statusState.status?.registration_enabled === true &&
+    !statusState.status?.ipa_only;
   let navigate = useNavigate();
 
   const [showSidebar, setShowSidebar] = useState(false);
@@ -218,14 +223,16 @@ const Header = () => {
                     >
                       {t('header.login')}
                     </Button>
-                    <Button
-                      onClick={() => {
-                        setShowSidebar(false);
-                        navigate('/register');
-                      }}
-                    >
-                      {t('header.register')}
-                    </Button>
+                    {registrationAllowed && (
+                      <Button
+                        onClick={() => {
+                          setShowSidebar(false);
+                          navigate('/register');
+                        }}
+                      >
+                        {t('header.register')}
+                      </Button>
+                    )}
                   </>
                 )}
               </Menu.Item>

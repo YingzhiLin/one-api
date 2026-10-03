@@ -83,6 +83,9 @@ func getGitHubUserInfoByCode(code string) (*GitHubUser, error) {
 }
 
 func GitHubOAuth(c *gin.Context) {
+	if rejectOutsideIPA(c) {
+		return
+	}
 	ctx := c.Request.Context()
 	session := sessions.Default(c)
 	state := c.Query("state")
@@ -128,7 +131,7 @@ func GitHubOAuth(c *gin.Context) {
 			return
 		}
 	} else {
-		if config.RegisterEnabled {
+		if config.CanRegister() {
 			user.Username = "github_" + strconv.Itoa(model.GetMaxUserId()+1)
 			if githubUser.Name != "" {
 				user.DisplayName = githubUser.Name

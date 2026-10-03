@@ -14,6 +14,7 @@ import {
 import { Link, useNavigate, useSearchParams } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import { UserContext } from '../context/User';
+import { StatusContext } from '../context/Status';
 import { API, getLogo, showError, showSuccess, showWarning } from '../helpers';
 import { onGitHubOAuthClicked, onLarkOAuthClicked } from './utils';
 import larkIcon from '../images/lark.svg';
@@ -30,17 +31,14 @@ const LoginForm = () => {
   const { username, password } = inputs;
   const [userState, userDispatch] = useContext(UserContext);
   let navigate = useNavigate();
-  const [status, setStatus] = useState({});
+  const [statusState] = useContext(StatusContext);
+  const status = statusState.status || {};
+  const [loggingIn, setLoggingIn] = useState(false);
   const logo = getLogo();
 
   useEffect(() => {
     if (searchParams.get('expired')) {
       showError(t('messages.error.login_expired'));
-    }
-    let status = localStorage.getItem('status');
-    if (status) {
-      status = JSON.parse(status);
-      setStatus(status);
     }
   }, []);
 
@@ -72,26 +70,49 @@ const LoginForm = () => {
   }
 
   async function handleSubmit(e) {
+    return submitLogin(e, false);
+  }
+
+  async function handleSubmitIPA(e) {
+    return submitLogin(e, true);
+  }
+
+  async function submitLogin(e, useIPA) {
+    e?.preventDefault();
+    if (!statusState.status || loggingIn) return;
     setSubmitted(true);
     if (username && password) {
-      const res = await API.post(`/api/user/login`, {
-        username,
-        password,
-      });
-      const { success, message, data } = res.data;
-      if (success) {
-        userDispatch({ type: 'login', payload: data });
-        localStorage.setItem('user', JSON.stringify(data));
-        if (username === 'root' && password === '123456') {
-          navigate('/user/edit');
-          showSuccess(t('messages.success.login'));
-          showWarning(t('messages.error.root_password'));
+      setLoggingIn(true);
+      try {
+        const ipaLogin = useIPA || status.ipa_only;
+        const res = await API.post(
+          ipaLogin ? `/api/user/ipa/login` : `/api/user/login`,
+          {
+            username,
+            password,
+          },
+          { timeout: 30000 }
+        );
+        if (!res) return;
+        const { success, message, data } = res.data;
+        if (success) {
+          userDispatch({ type: 'login', payload: data });
+          localStorage.setItem('user', JSON.stringify(data));
+          if (username === 'root' && password === '123456') {
+            navigate('/user/edit');
+            showSuccess(t('messages.success.login'));
+            showWarning(t('messages.error.root_password'));
+          } else {
+            navigate('/token');
+            showSuccess(t('messages.success.login'));
+          }
         } else {
-          navigate('/token');
-          showSuccess(t('messages.success.login'));
+          showError(message);
         }
-      } else {
-        showError(message);
+      } catch (error) {
+        showError(error);
+      } finally {
+        setLoggingIn(false);
       }
     }
   }
@@ -137,18 +158,46 @@ const LoginForm = () => {
                 onChange={handleChange}
                 style={{ marginBottom: '1.5em' }}
               />
-              <Button
-                fluid
-                size='large'
-                style={{
-                  background: '#2F73FF', // 使用更现代的蓝色
-                  color: 'white',
-                  marginBottom: '1.5em',
-                }}
-                onClick={handleSubmit}
-              >
-                {t('auth.login.button')}
-              </Button>
+              {!status.ipa_only && (
+                <Button
+                  loading={loggingIn}
+                  disabled={loggingIn || !statusState.status}
+                  fluid
+                  size='large'
+                  style={{
+                    background: '#2F73FF', // 使用更现代的蓝色
+                    color: 'white',
+                    marginBottom: '1.5em',
+                  }}
+                  onClick={handleSubmit}
+                >
+                  {t('auth.login.button')}
+                </Button>
+              )}
+              {status.ipa_login && !status.ipa_only && (
+                <Button
+                  fluid
+                  size='large'
+                  loading={loggingIn}
+                  disabled={loggingIn || !statusState.status}
+                  onClick={handleSubmitIPA}
+                  style={{ marginBottom: '1.5em' }}
+                >
+                  {t('auth.login.ipa_button')}
+                </Button>
+              )}
+              {status.ipa_only && (
+                <Button
+                  fluid
+                  size='large'
+                  loading={loggingIn}
+                  disabled={loggingIn || !statusState.status}
+                  onClick={handleSubmitIPA}
+                  style={{ marginBottom: '1.5em' }}
+                >
+                  {t('auth.login.ipa_button')}
+                </Button>
+              )}
             </Form>
 
             <Divider />
@@ -161,91 +210,100 @@ const LoginForm = () => {
                   color: '#666',
                 }}
               >
-                <div>
-                  {t('auth.login.forgot_password')}
-                  <Link
-                    to='/reset'
-                    style={{ color: '#2185d0', marginLeft: '2px' }}
-                  >
-                    {t('auth.login.reset_password')}
-                  </Link>
-                </div>
-                <div>
-                  {t('auth.login.no_account')}
-                  <Link
-                    to='/register'
-                    style={{ color: '#2185d0', marginLeft: '2px' }}
-                  >
-                    {t('auth.login.register')}
-                  </Link>
-                </div>
+                {!status.ipa_only && (
+                  <>
+                    <div>
+                      {t('auth.login.forgot_password')}
+                      <Link
+                        to='/reset'
+                        style={{ color: '#2185d0', marginLeft: '2px' }}
+                      >
+                        {t('auth.login.reset_password')}
+                      </Link>
+                    </div>
+                    {status.registration_enabled && (
+                      <div>
+                        {t('auth.login.no_account')}
+                        <Link
+                          to='/register'
+                          style={{ color: '#2185d0', marginLeft: '2px' }}
+                        >
+                          {t('auth.login.register')}
+                        </Link>
+                      </div>
+                    )}
+                  </>
+                )}
               </div>
             </Message>
 
-            {(status.github_oauth ||
-              status.wechat_login ||
-              status.lark_client_id) && (
-              <>
-                <Divider
-                  horizontal
-                  style={{ color: '#666', fontSize: '0.9em' }}
-                >
-                  {t('auth.login.other_methods')}
-                </Divider>
-                <div
-                  style={{
-                    display: 'flex',
-                    justifyContent: 'center',
-                    gap: '1em',
-                    marginTop: '1em',
-                  }}
-                >
-                  {status.github_oauth && (
-                    <Button
-                      circular
-                      color='black'
-                      icon='github'
-                      onClick={() =>
-                        onGitHubOAuthClicked(status.github_client_id)
-                      }
-                    />
-                  )}
-                  {status.wechat_login && (
-                    <Button
-                      circular
-                      color='green'
-                      icon='wechat'
-                      onClick={onWeChatLoginClicked}
-                    />
-                  )}
-                  {status.lark_client_id && (
-                    <div
-                      style={{
-                        background:
-                          'radial-gradient(circle, #FFFFFF, #FFFFFF, #FFFFFF, #FFFFFF, #FFFFFF)',
-                        width: '36px',
-                        height: '36px',
-                        borderRadius: '10em',
-                        display: 'flex',
-                        cursor: 'pointer',
-                      }}
-                      onClick={() => onLarkOAuthClicked(status.lark_client_id)}
-                    >
-                      <Image
-                        src={larkIcon}
-                        avatar
+            {!status.ipa_only &&
+              (status.github_oauth ||
+                status.wechat_login ||
+                status.lark_client_id) && (
+                <>
+                  <Divider
+                    horizontal
+                    style={{ color: '#666', fontSize: '0.9em' }}
+                  >
+                    {t('auth.login.other_methods')}
+                  </Divider>
+                  <div
+                    style={{
+                      display: 'flex',
+                      justifyContent: 'center',
+                      gap: '1em',
+                      marginTop: '1em',
+                    }}
+                  >
+                    {status.github_oauth && (
+                      <Button
+                        circular
+                        color='black'
+                        icon='github'
+                        onClick={() =>
+                          onGitHubOAuthClicked(status.github_client_id)
+                        }
+                      />
+                    )}
+                    {status.wechat_login && (
+                      <Button
+                        circular
+                        color='green'
+                        icon='wechat'
+                        onClick={onWeChatLoginClicked}
+                      />
+                    )}
+                    {status.lark_client_id && (
+                      <div
                         style={{
+                          background:
+                            'radial-gradient(circle, #FFFFFF, #FFFFFF, #FFFFFF, #FFFFFF, #FFFFFF)',
                           width: '36px',
                           height: '36px',
+                          borderRadius: '10em',
+                          display: 'flex',
                           cursor: 'pointer',
-                          margin: 'auto',
                         }}
-                      />
-                    </div>
-                  )}
-                </div>
-              </>
-            )}
+                        onClick={() =>
+                          onLarkOAuthClicked(status.lark_client_id)
+                        }
+                      >
+                        <Image
+                          src={larkIcon}
+                          avatar
+                          style={{
+                            width: '36px',
+                            height: '36px',
+                            cursor: 'pointer',
+                            margin: 'auto',
+                          }}
+                        />
+                      </div>
+                    )}
+                  </div>
+                </>
+              )}
           </Card.Content>
         </Card>
         <Modal

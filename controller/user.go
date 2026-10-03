@@ -14,6 +14,7 @@ import (
 	"github.com/songquanpeng/one-api/common/config"
 	"github.com/songquanpeng/one-api/common/ctxkey"
 	"github.com/songquanpeng/one-api/common/i18n"
+	"github.com/songquanpeng/one-api/common/ipa"
 	"github.com/songquanpeng/one-api/common/random"
 	"github.com/songquanpeng/one-api/model"
 )
@@ -24,6 +25,10 @@ type LoginRequest struct {
 }
 
 func Login(c *gin.Context) {
+	if config.IPAOnly {
+		c.JSON(http.StatusOK, gin.H{"message": "系统仅允许使用 FreeIPA 登录", "success": false})
+		return
+	}
 	if !config.PasswordLoginEnabled {
 		c.JSON(http.StatusOK, gin.H{
 			"message": "管理员关闭了密码登录",
@@ -62,6 +67,33 @@ func Login(c *gin.Context) {
 		return
 	}
 	SetupLogin(&user, c)
+}
+
+func IPALogin(c *gin.Context) {
+	if !config.IPAEnabled {
+		c.JSON(http.StatusOK, gin.H{"success": false, "message": "管理员尚未启用 FreeIPA 登录"})
+		return
+	}
+	var loginRequest LoginRequest
+	if err := c.ShouldBindJSON(&loginRequest); err != nil {
+		c.JSON(http.StatusOK, gin.H{"success": false, "message": i18n.Translate(c, "invalid_parameter")})
+		return
+	}
+	directoryUser, err := ipa.Authenticate(loginRequest.Username, loginRequest.Password)
+	if err != nil {
+		c.JSON(http.StatusOK, gin.H{"success": false, "message": err.Error()})
+		return
+	}
+	user, err := model.SyncIPAUser(directoryUser)
+	if err != nil {
+		c.JSON(http.StatusOK, gin.H{"success": false, "message": err.Error()})
+		return
+	}
+	if user.Status != model.UserStatusEnabled {
+		c.JSON(http.StatusOK, gin.H{"success": false, "message": "用户已被禁用"})
+		return
+	}
+	SetupLogin(user, c)
 }
 
 // setup session & cookies and then return user info
@@ -112,7 +144,7 @@ func Logout(c *gin.Context) {
 
 func Register(c *gin.Context) {
 	ctx := c.Request.Context()
-	if !config.RegisterEnabled {
+	if !config.CanRegister() {
 		c.JSON(http.StatusOK, gin.H{
 			"message": "管理员关闭了新用户注册",
 			"success": false,
@@ -192,6 +224,10 @@ func GetAllUsers(c *gin.Context) {
 
 	order := c.DefaultQuery("order", "")
 	users, err := model.GetAllUsers(p*config.ItemsPerPage, config.ItemsPerPage, order)
+	var total int64
+	if err == nil {
+		total, err = model.CountListedUsers()
+	}
 
 	if err != nil {
 		c.JSON(http.StatusOK, gin.H{
@@ -205,6 +241,7 @@ func GetAllUsers(c *gin.Context) {
 		"success": true,
 		"message": "",
 		"data":    users,
+		"total":   total,
 	})
 }
 
@@ -401,6 +438,15 @@ func UpdateUser(c *gin.Context) {
 		})
 		return
 	}
+	if originUser.IPAEntryUUID != "" {
+		updatedUser.Role = originUser.Role
+		updatedUser.Username = originUser.Username
+		updatedUser.DisplayName = originUser.DisplayName
+		updatedUser.Email = originUser.Email
+		updatedUser.IPAEntryUUID = originUser.IPAEntryUUID
+		updatedUser.IPAUid = originUser.IPAUid
+		updatedUser.Password = ""
+	}
 	if myRole <= updatedUser.Role && myRole != model.RoleRootUser {
 		c.JSON(http.StatusOK, gin.H{
 			"success": false,
@@ -430,8 +476,13 @@ func UpdateUser(c *gin.Context) {
 }
 
 func UpdateSelf(c *gin.Context) {
+	currentUser, err := model.GetUserById(c.GetInt(ctxkey.Id), true)
+	if err != nil {
+		c.JSON(http.StatusOK, gin.H{"success": false, "message": err.Error()})
+		return
+	}
 	var user model.User
-	err := json.NewDecoder(c.Request.Body).Decode(&user)
+	err = json.NewDecoder(c.Request.Body).Decode(&user)
 	if err != nil {
 		c.JSON(http.StatusOK, gin.H{
 			"success": false,
@@ -456,11 +507,19 @@ func UpdateSelf(c *gin.Context) {
 		Password:    user.Password,
 		DisplayName: user.DisplayName,
 	}
+	if currentUser.IPAEntryUUID != "" {
+		cleanUser.Username = currentUser.Username
+		cleanUser.DisplayName = currentUser.DisplayName
+	}
 	if user.Password == "$I_LOVE_U" {
 		user.Password = "" // rollback to what it should be
 		cleanUser.Password = ""
 	}
 	updatePassword := user.Password != ""
+	if currentUser.IPAEntryUUID != "" && updatePassword {
+		c.JSON(http.StatusOK, gin.H{"success": false, "message": "FreeIPA 账号密码请在 FreeIPA 中修改"})
+		return
+	}
 	if err := cleanUser.Update(updatePassword); err != nil {
 		c.JSON(http.StatusOK, gin.H{
 			"success": false,
@@ -493,6 +552,10 @@ func DeleteUser(c *gin.Context) {
 		})
 		return
 	}
+	if originUser.IPAEntryUUID != "" {
+		c.JSON(http.StatusOK, gin.H{"success": false, "message": "FreeIPA 账号不能从本系统删除"})
+		return
+	}
 	myRole := c.GetInt("role")
 	if myRole <= originUser.Role {
 		c.JSON(http.StatusOK, gin.H{
@@ -512,6 +575,15 @@ func DeleteUser(c *gin.Context) {
 }
 
 func DeleteSelf(c *gin.Context) {
+	currentUser, err := model.GetUserById(c.GetInt(ctxkey.Id), true)
+	if err != nil {
+		c.JSON(http.StatusOK, gin.H{"success": false, "message": err.Error()})
+		return
+	}
+	if currentUser.IPAEntryUUID != "" {
+		c.JSON(http.StatusOK, gin.H{"success": false, "message": "FreeIPA 账号请在 FreeIPA 中管理"})
+		return
+	}
 	id := c.GetInt("id")
 	user, _ := model.GetUserById(id, false)
 
@@ -523,7 +595,7 @@ func DeleteSelf(c *gin.Context) {
 		return
 	}
 
-	err := model.DeleteUserById(id)
+	err = model.DeleteUserById(id)
 	if err != nil {
 		c.JSON(http.StatusOK, gin.H{
 			"success": false,
@@ -539,6 +611,10 @@ func DeleteSelf(c *gin.Context) {
 }
 
 func CreateUser(c *gin.Context) {
+	if config.IPAOnly {
+		c.JSON(http.StatusOK, gin.H{"success": false, "message": "系统仅允许通过 FreeIPA 添加用户"})
+		return
+	}
 	ctx := c.Request.Context()
 	var user model.User
 	err := json.NewDecoder(c.Request.Body).Decode(&user)
@@ -565,6 +641,10 @@ func CreateUser(c *gin.Context) {
 			"success": false,
 			"message": "无法创建权限大于等于自己的用户",
 		})
+		return
+	}
+	if config.IPAEnabled && user.Role >= model.RoleAdminUser {
+		c.JSON(http.StatusOK, gin.H{"success": false, "message": "FreeIPA 已启用，管理员角色由 IPA 管理员组授予"})
 		return
 	}
 	// Even for admin users, we cannot fully trust them!
@@ -623,6 +703,14 @@ func ManageUser(c *gin.Context) {
 			"success": false,
 			"message": "无权更新同权限等级或更高权限等级的用户信息",
 		})
+		return
+	}
+	if user.IPAEntryUUID != "" && (req.Action == "promote" || req.Action == "demote" || req.Action == "delete") {
+		c.JSON(http.StatusOK, gin.H{"success": false, "message": "FreeIPA 账号的管理员身份由 IPA 组管理，账号不能从本系统删除"})
+		return
+	}
+	if config.IPAEnabled && (req.Action == "promote" || req.Action == "demote") {
+		c.JSON(http.StatusOK, gin.H{"success": false, "message": "FreeIPA 已启用，管理员角色由 IPA 管理员组授予"})
 		return
 	}
 	switch req.Action {

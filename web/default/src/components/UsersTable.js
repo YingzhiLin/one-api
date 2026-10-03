@@ -37,7 +37,10 @@ function renderRole(role, t) {
 
 const UsersTable = () => {
   const { t } = useTranslation();
+  const ipaEnabled = JSON.parse(localStorage.getItem('status') || '{}').ipa_login;
   const [users, setUsers] = useState([]);
+  const [totalUsers, setTotalUsers] = useState(0);
+  const [searchResults, setSearchResults] = useState(null);
   const [loading, setLoading] = useState(true);
   const [activePage, setActivePage] = useState(1);
   const [searchKeyword, setSearchKeyword] = useState('');
@@ -45,30 +48,34 @@ const UsersTable = () => {
   const [orderBy, setOrderBy] = useState('');
 
   const loadUsers = async (startIdx) => {
-    const res = await API.get(`/api/user/?p=${startIdx}&order=${orderBy}`);
-    const { success, message, data } = res.data;
-    if (success) {
-      if (startIdx === 0) {
+    setLoading(true);
+    try {
+      const res = await API.get(`/api/user/?p=${startIdx}&order=${orderBy}`);
+      const { success, message, data, total } = res.data;
+      if (success) {
         setUsers(data);
+        setTotalUsers(total);
+        setSearchResults(null);
+        return true;
       } else {
-        let newUsers = users;
-        newUsers.push(...data);
-        setUsers(newUsers);
+        showError(message);
+        return false;
       }
-    } else {
-      showError(message);
+    } catch (error) {
+      showError(error);
+      return false;
+    } finally {
+      setLoading(false);
     }
-    setLoading(false);
   };
 
-  const onPaginationChange = (e, { activePage }) => {
-    (async () => {
-      if (activePage === Math.ceil(users.length / ITEMS_PER_PAGE) + 1) {
-        // In this case we have to load more data and then append them.
-        await loadUsers(activePage - 1, orderBy);
-      }
-      setActivePage(activePage);
-    })();
+  const onPaginationChange = async (e, { activePage: targetPage }) => {
+    if (searchResults !== null) {
+      setUsers(searchResults.slice((targetPage - 1) * ITEMS_PER_PAGE, targetPage * ITEMS_PER_PAGE));
+    } else if (!(await loadUsers(targetPage - 1))) {
+      return;
+    }
+    setActivePage(targetPage);
   };
 
   useEffect(() => {
@@ -89,22 +96,34 @@ const UsersTable = () => {
       if (success) {
         showSuccess(t('user.messages.operation_success'));
         let user = res.data.data;
-        let newUsers = [...users];
-        let realIdx = (activePage - 1) * ITEMS_PER_PAGE + idx;
         if (action === 'delete') {
-          newUsers[realIdx].deleted = true;
+          const targetPage = Math.min(activePage, Math.max(1, Math.ceil((totalUsers - 1) / ITEMS_PER_PAGE)));
+          if (searchResults !== null) {
+            const remaining = searchResults.filter((existing) => existing.id !== users[idx].id);
+            setSearchResults(remaining);
+            setTotalUsers(remaining.length);
+            setUsers(remaining.slice((targetPage - 1) * ITEMS_PER_PAGE, targetPage * ITEMS_PER_PAGE));
+          } else {
+            await loadUsers(targetPage - 1);
+          }
+          setActivePage(targetPage);
         } else {
-          newUsers[realIdx].status = user.status;
-          newUsers[realIdx].role = user.role;
+          const updateUser = (existing) => existing.id === users[idx].id
+            ? { ...existing, status: user.status, role: user.role }
+            : existing;
+          setUsers((previous) => previous.map(updateUser));
+          if (searchResults !== null) setSearchResults((previous) => previous.map(updateUser));
         }
-        setUsers(newUsers);
       } else {
         showError(message);
       }
     })();
   };
 
-  const renderStatus = (status) => {
+  const renderStatus = (status, ipaLocked) => {
+    if (ipaLocked) {
+      return <Label basic color='red'>FreeIPA 锁定</Label>;
+    }
     switch (status) {
       case 1:
         return <Label basic>{t('user.table.status_types.activated')}</Label>;
@@ -125,22 +144,31 @@ const UsersTable = () => {
 
   const searchUsers = async () => {
     if (searchKeyword === '') {
-      // if keyword is blank, load files instead.
-      await loadUsers(0);
-      setActivePage(1);
-      setOrderBy('');
+      if (orderBy !== '') {
+        setOrderBy('');
+        setActivePage(1);
+      } else if (await loadUsers(0)) {
+        setActivePage(1);
+      }
       return;
     }
     setSearching(true);
-    const res = await API.get(`/api/user/search?keyword=${searchKeyword}`);
-    const { success, message, data } = res.data;
-    if (success) {
-      setUsers(data);
-      setActivePage(1);
-    } else {
-      showError(message);
+    try {
+      const res = await API.get(`/api/user/search?keyword=${encodeURIComponent(searchKeyword)}`);
+      const { success, message, data } = res.data;
+      if (success) {
+        setSearchResults(data);
+        setUsers(data.slice(0, ITEMS_PER_PAGE));
+        setTotalUsers(data.length);
+        setActivePage(1);
+      } else {
+        showError(message);
+      }
+    } catch (error) {
+      showError(error);
+    } finally {
+      setSearching(false);
     }
-    setSearching(false);
   };
 
   const handleKeywordChange = async (e, { value }) => {
@@ -150,7 +178,8 @@ const UsersTable = () => {
   const sortUser = (key) => {
     if (users.length === 0) return;
     setLoading(true);
-    let sortedUsers = [...users];
+    const sourceUsers = searchResults ?? users;
+    let sortedUsers = [...sourceUsers];
     sortedUsers.sort((a, b) => {
       if (!isNaN(a[key])) {
         // If the value is numeric, subtract to sort
@@ -160,10 +189,15 @@ const UsersTable = () => {
         return ('' + a[key]).localeCompare(b[key]);
       }
     });
-    if (sortedUsers[0].id === users[0].id) {
+    if (sortedUsers[0].id === sourceUsers[0].id) {
       sortedUsers.reverse();
     }
-    setUsers(sortedUsers);
+    if (searchResults !== null) {
+      setSearchResults(sortedUsers);
+      setUsers(sortedUsers.slice((activePage - 1) * ITEMS_PER_PAGE, activePage * ITEMS_PER_PAGE));
+    } else {
+      setUsers(sortedUsers);
+    }
     setLoading(false);
   };
 
@@ -242,12 +276,7 @@ const UsersTable = () => {
         </Table.Header>
 
         <Table.Body>
-          {users
-            .slice(
-              (activePage - 1) * ITEMS_PER_PAGE,
-              activePage * ITEMS_PER_PAGE
-            )
-            .map((user, idx) => {
+          {users.map((user, idx) => {
               if (user.deleted) return <></>;
               return (
                 <Table.Row key={user.id}>
@@ -262,6 +291,7 @@ const UsersTable = () => {
                       trigger={<span>{renderText(user.username, 15)}</span>}
                       hoverable
                     />
+                    {user.ipa_uid && <Label size='mini' color='blue'>IPA</Label>}
                   </Table.Cell>
                   <Table.Cell>{renderGroup(user.group)}</Table.Cell>
                   {/*<Table.Cell>*/}
@@ -288,10 +318,10 @@ const UsersTable = () => {
                     />
                   </Table.Cell>
                   <Table.Cell>{renderRole(user.role, t)}</Table.Cell>
-                  <Table.Cell>{renderStatus(user.status)}</Table.Cell>
+                  <Table.Cell>{renderStatus(user.status, user.ipa_locked)}</Table.Cell>
                   <Table.Cell>
                     <div>
-                      <Button
+                      {!ipaEnabled && !user.ipa_uid && <Button
                         size={'tiny'}
                         positive
                         onClick={() => {
@@ -300,8 +330,8 @@ const UsersTable = () => {
                         disabled={user.role === 100}
                       >
                         {t('user.buttons.promote')}
-                      </Button>
-                      <Button
+                      </Button>}
+                      {!ipaEnabled && !user.ipa_uid && <Button
                         size={'tiny'}
                         color={'yellow'}
                         onClick={() => {
@@ -310,8 +340,8 @@ const UsersTable = () => {
                         disabled={user.role === 100}
                       >
                         {t('user.buttons.demote')}
-                      </Button>
-                      <Popup
+                      </Button>}
+                      {!user.ipa_uid && <Popup
                         trigger={
                           <Button
                             size='tiny'
@@ -334,7 +364,7 @@ const UsersTable = () => {
                         >
                           {t('user.buttons.delete_user')} {user.username}
                         </Button>
-                      </Popup>
+                      </Popup>}
                       <Button
                         size={'tiny'}
                         onClick={() => {
@@ -367,9 +397,11 @@ const UsersTable = () => {
         <Table.Footer>
           <Table.Row>
             <Table.HeaderCell colSpan='7'>
-              <Button size='small' as={Link} to='/user/add' loading={loading}>
-                {t('user.buttons.add')}
-              </Button>
+              {!JSON.parse(localStorage.getItem('status') || '{}').ipa_only && (
+                <Button size='small' as={Link} to='/user/add' loading={loading}>
+                  {t('user.buttons.add')}
+                </Button>
+              )}
               <Dropdown
                 placeholder={t('user.table.sort_by')}
                 selection
@@ -396,15 +428,13 @@ const UsersTable = () => {
                 style={{ marginLeft: '10px' }}
               />
               <Pagination
+                disabled={loading || searching}
                 floated='right'
                 activePage={activePage}
                 onPageChange={onPaginationChange}
                 size='small'
                 siblingRange={1}
-                totalPages={
-                  Math.ceil(users.length / ITEMS_PER_PAGE) +
-                  (users.length % ITEMS_PER_PAGE === 0 ? 1 : 0)
-                }
+                totalPages={Math.max(1, Math.ceil(totalUsers / ITEMS_PER_PAGE))}
               />
             </Table.HeaderCell>
           </Table.Row>

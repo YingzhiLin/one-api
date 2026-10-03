@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import {
   Button,
@@ -62,32 +62,53 @@ const RedemptionsTable = () => {
   const [activePage, setActivePage] = useState(1);
   const [searchKeyword, setSearchKeyword] = useState('');
   const [searching, setSearching] = useState(false);
+  const [totalRedemptions, setTotalRedemptions] = useState(0);
+  const [searchResults, setSearchResults] = useState(null);
+  const [submittedKeyword, setSubmittedKeyword] = useState('');
+  const requestId = useRef(0);
 
   const loadRedemptions = async (startIdx) => {
-    const res = await API.get(`/api/redemption/?p=${startIdx}`);
-    const { success, message, data } = res.data;
-    if (success) {
-      if (startIdx === 0) {
-        setRedemptions(data);
-      } else {
-        let newRedemptions = redemptions;
-        newRedemptions.push(...data);
-        setRedemptions(newRedemptions);
+    const currentRequest = ++requestId.current;
+    setLoading(true);
+    setSearching(false);
+    try {
+      let res = await API.get(`/api/redemption/?p=${startIdx}`);
+      if (currentRequest !== requestId.current) return;
+      if (!res.data.success) {
+        showError(res.data.message);
+        return;
       }
-    } else {
-      showError(message);
+      const lastPageIndex = Math.max(0, Math.ceil(res.data.total / ITEMS_PER_PAGE) - 1);
+      const pageIndex = Math.min(startIdx, lastPageIndex);
+      if (pageIndex !== startIdx) {
+        res = await API.get(`/api/redemption/?p=${pageIndex}`);
+        if (currentRequest !== requestId.current) return;
+      }
+      const { success, message, data, total } = res.data;
+      if (success) {
+        setRedemptions(data);
+        setTotalRedemptions(total);
+        setSearchResults(null);
+        setSubmittedKeyword('');
+        setActivePage(pageIndex + 1);
+      } else {
+        showError(message);
+      }
+    } catch (error) {
+      if (currentRequest === requestId.current) showError(error);
+    } finally {
+      if (currentRequest === requestId.current) setLoading(false);
     }
-    setLoading(false);
   };
 
-  const onPaginationChange = (e, { activePage }) => {
-    (async () => {
-      if (activePage === Math.ceil(redemptions.length / ITEMS_PER_PAGE) + 1) {
-        // In this case we have to load more data and then append them.
-        await loadRedemptions(activePage - 1);
-      }
-      setActivePage(activePage);
-    })();
+  const onPaginationChange = async (e, { activePage: targetPage }) => {
+    if (loading || searching) return;
+    if (searchResults !== null) {
+      setRedemptions(searchResults.slice((targetPage - 1) * ITEMS_PER_PAGE, targetPage * ITEMS_PER_PAGE));
+      setActivePage(targetPage);
+    } else {
+      await loadRedemptions(targetPage - 1);
+    }
   };
 
   useEffect(() => {
@@ -98,7 +119,7 @@ const RedemptionsTable = () => {
       });
   }, []);
 
-  const manageRedemption = async (id, action, idx) => {
+  const manageRedemption = async (id, action) => {
     let data = { id };
     let res;
     switch (action) {
@@ -117,39 +138,60 @@ const RedemptionsTable = () => {
     const { success, message } = res.data;
     if (success) {
       showSuccess(t('token.messages.operation_success'));
-      let redemption = res.data.data;
-      let newRedemptions = [...redemptions];
-      let realIdx = (activePage - 1) * ITEMS_PER_PAGE + idx;
       if (action === 'delete') {
-        newRedemptions[realIdx].deleted = true;
+        if (searchResults !== null) {
+          await loadSearchRedemptions(submittedKeyword, activePage);
+        } else {
+          await loadRedemptions(activePage - 1);
+        }
       } else {
-        newRedemptions[realIdx].status = redemption.status;
+        const updateRedemption = (existing) => existing.id === id
+          ? { ...existing, status: res.data.data.status }
+          : existing;
+        setRedemptions((previous) => previous.map(updateRedemption));
+        if (searchResults !== null) {
+          setSearchResults((previous) => previous.map(updateRedemption));
+        }
       }
-      setRedemptions(newRedemptions);
     } else {
       showError(message);
     }
   };
 
+  const loadSearchRedemptions = async (keyword, targetPage = 1) => {
+    const currentRequest = ++requestId.current;
+    setSearching(true);
+    setLoading(true);
+    try {
+      const res = await API.get(`/api/redemption/search?keyword=${encodeURIComponent(keyword)}`);
+      if (currentRequest !== requestId.current) return;
+      const { success, message, data } = res.data;
+      if (success) {
+        const page = Math.min(targetPage, Math.max(1, Math.ceil(data.length / ITEMS_PER_PAGE)));
+        setSearchResults(data);
+        setSubmittedKeyword(keyword);
+        setTotalRedemptions(data.length);
+        setRedemptions(data.slice((page - 1) * ITEMS_PER_PAGE, page * ITEMS_PER_PAGE));
+        setActivePage(page);
+      } else {
+        showError(message);
+      }
+    } catch (error) {
+      if (currentRequest === requestId.current) showError(error);
+    } finally {
+      if (currentRequest === requestId.current) {
+        setSearching(false);
+        setLoading(false);
+      }
+    }
+  };
+
   const searchRedemptions = async () => {
     if (searchKeyword === '') {
-      // if keyword is blank, load files instead.
       await loadRedemptions(0);
-      setActivePage(1);
-      return;
-    }
-    setSearching(true);
-    const res = await API.get(
-      `/api/redemption/search?keyword=${searchKeyword}`
-    );
-    const { success, message, data } = res.data;
-    if (success) {
-      setRedemptions(data);
-      setActivePage(1);
     } else {
-      showError(message);
+      await loadSearchRedemptions(searchKeyword);
     }
-    setSearching(false);
   };
 
   const handleKeywordChange = async (e, { value }) => {
@@ -159,7 +201,7 @@ const RedemptionsTable = () => {
   const sortRedemption = (key) => {
     if (redemptions.length === 0) return;
     setLoading(true);
-    let sortedRedemptions = [...redemptions];
+    let sortedRedemptions = [...(searchResults !== null ? searchResults : redemptions)];
     sortedRedemptions.sort((a, b) => {
       if (!isNaN(a[key])) {
         // If the value is numeric, subtract to sort
@@ -169,17 +211,24 @@ const RedemptionsTable = () => {
         return ('' + a[key]).localeCompare(b[key]);
       }
     });
-    if (sortedRedemptions[0].id === redemptions[0].id) {
+    if (sortedRedemptions[0].id === (searchResults !== null ? searchResults[0].id : redemptions[0].id)) {
       sortedRedemptions.reverse();
     }
-    setRedemptions(sortedRedemptions);
+    if (searchResults !== null) {
+      setSearchResults(sortedRedemptions);
+      setRedemptions(sortedRedemptions.slice((activePage - 1) * ITEMS_PER_PAGE, activePage * ITEMS_PER_PAGE));
+    } else {
+      setRedemptions(sortedRedemptions);
+    }
     setLoading(false);
   };
 
   const refresh = async () => {
-    setLoading(true);
-    await loadRedemptions(0);
-    setActivePage(1);
+    if (searchResults !== null) {
+      await loadSearchRedemptions(submittedKeyword, activePage);
+    } else {
+      await loadRedemptions(activePage - 1);
+    }
   };
 
   return (
@@ -252,12 +301,7 @@ const RedemptionsTable = () => {
         </Table.Header>
 
         <Table.Body>
-          {redemptions
-            .slice(
-              (activePage - 1) * ITEMS_PER_PAGE,
-              activePage * ITEMS_PER_PAGE
-            )
-            .map((redemption, idx) => {
+          {redemptions.map((redemption) => {
               if (redemption.deleted) return <></>;
               return (
                 <Table.Row key={redemption.id}>
@@ -304,7 +348,7 @@ const RedemptionsTable = () => {
                         <Button
                           negative
                           onClick={() => {
-                            manageRedemption(redemption.id, 'delete', idx);
+                            manageRedemption(redemption.id, 'delete');
                           }}
                         >
                           {t('redemption.buttons.confirm_delete')}
@@ -316,8 +360,7 @@ const RedemptionsTable = () => {
                         onClick={() => {
                           manageRedemption(
                             redemption.id,
-                            redemption.status === 1 ? 'disable' : 'enable',
-                            idx
+                            redemption.status === 1 ? 'disable' : 'enable'
                           );
                         }}
                       >
@@ -359,10 +402,8 @@ const RedemptionsTable = () => {
                 onPageChange={onPaginationChange}
                 size='small'
                 siblingRange={1}
-                totalPages={
-                  Math.ceil(redemptions.length / ITEMS_PER_PAGE) +
-                  (redemptions.length % ITEMS_PER_PAGE === 0 ? 1 : 0)
-                }
+                disabled={loading || searching}
+                totalPages={Math.max(1, Math.ceil(totalRedemptions / ITEMS_PER_PAGE))}
               />
             </Table.HeaderCell>
           </Table.Row>

@@ -16,10 +16,11 @@ const EditUser = (props) => {
     wechat_id: '',
     email: '',
     quota: 0,
-    group: 'default'
+    group: 'default',
+    ipa_uid: ''
   });
   const [groupOptions, setGroupOptions] = useState([]);
-  const { username, display_name, password, github_id, wechat_id, telegram_id, email, quota, group } =
+  const { username, display_name, password, github_id, wechat_id, telegram_id, email, quota, group, ipa_uid } =
     inputs;
   const handleInputChange = (name, value) => {
     setInputs((inputs) => ({ ...inputs, [name]: value }));
@@ -108,40 +109,42 @@ const EditUser = (props) => {
         width={isMobile() ? '100%' : 600}
       >
         <Spin spinning={loading}>
-          <div style={{ marginTop: 20 }}>
-            <Typography.Text>用户名</Typography.Text>
-          </div>
-          <Input
-            label="用户名"
-            name="username"
-            placeholder={'请输入新的用户名'}
-            onChange={value => handleInputChange('username', value)}
-            value={username}
-            autoComplete="new-password"
-          />
-          <div style={{ marginTop: 20 }}>
-            <Typography.Text>密码</Typography.Text>
-          </div>
-          <Input
-            label="密码"
-            name="password"
-            type={'password'}
-            placeholder={'请输入新的密码，最短 8 位'}
-            onChange={value => handleInputChange('password', value)}
-            value={password}
-            autoComplete="new-password"
-          />
-          <div style={{ marginTop: 20 }}>
-            <Typography.Text>显示名称</Typography.Text>
-          </div>
-          <Input
-            label="显示名称"
-            name="display_name"
-            placeholder={'请输入新的显示名称'}
-            onChange={value => handleInputChange('display_name', value)}
-            value={display_name}
-            autoComplete="new-password"
-          />
+          {!ipa_uid && <>
+            <div style={{ marginTop: 20 }}>
+              <Typography.Text>用户名</Typography.Text>
+            </div>
+            <Input
+              label="用户名"
+              name="username"
+              placeholder={'请输入新的用户名'}
+              onChange={value => handleInputChange('username', value)}
+              value={username}
+              autoComplete="new-password"
+            />
+            <div style={{ marginTop: 20 }}>
+              <Typography.Text>密码</Typography.Text>
+            </div>
+            <Input
+              label="密码"
+              name="password"
+              type={'password'}
+              placeholder={'请输入新的密码，最短 8 位'}
+              onChange={value => handleInputChange('password', value)}
+              value={password}
+              autoComplete="new-password"
+            />
+            <div style={{ marginTop: 20 }}>
+              <Typography.Text>显示名称</Typography.Text>
+            </div>
+            <Input
+              label="显示名称"
+              name="display_name"
+              placeholder={'请输入新的显示名称'}
+              onChange={value => handleInputChange('display_name', value)}
+              value={display_name}
+              autoComplete="new-password"
+            />
+          </>}
           {
             userId && <>
               <div style={{ marginTop: 20 }}>

@@ -769,6 +769,7 @@
       "username": "用户名 / 邮箱地址",
       "password": "密码",
       "button": "登录",
+      "ipa_button": "使用 IPA 账号登录",
       "forgot_password": "忘记密码？",
       "reset_password": "点击重置",
       "no_account": "没有账户？",

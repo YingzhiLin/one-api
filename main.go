@@ -76,6 +76,9 @@ func main() {
 		go model.SyncOptions(config.SyncFrequency)
 		go model.SyncChannelCache(config.SyncFrequency)
 	}
+	if config.IPAEnabled {
+		go model.SyncIPAUsersPeriodically(config.IPASyncFrequency)
+	}
 	if os.Getenv("CHANNEL_TEST_FREQUENCY") != "" {
 		frequency, err := strconv.Atoi(os.Getenv("CHANNEL_TEST_FREQUENCY"))
 		if err != nil {

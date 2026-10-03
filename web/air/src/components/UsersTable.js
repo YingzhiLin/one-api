@@ -20,10 +20,11 @@ function renderRole(role) {
 }
 
 const UsersTable = () => {
+  const isIPAEnabled = JSON.parse(localStorage.getItem('status') || '{}').ipa_login;
   const columns = [{
     title: 'ID', dataIndex: 'id'
   }, {
-    title: '用户名', dataIndex: 'username'
+    title: '用户名', dataIndex: 'username', render: (text, record) => <span>{text}{record.ipa_uid && <Tag color="blue" style={{ marginLeft: 6 }}>IPA</Tag>}</span>
   }, {
     title: '分组', dataIndex: 'group', render: (text, record, index) => {
       return (<div>
@@ -75,14 +76,14 @@ const UsersTable = () => {
   {
     title: '状态', dataIndex: 'status', render: (text, record, index) => {
       return (<div>
-        {renderStatus(text)}
+        {renderStatus(text, record.ipa_locked)}
       </div>);
     }
   },
   {
     title: '', dataIndex: 'operate', render: (text, record, index) => (<div>
       <>
-        <Popconfirm
+        {!isIPAEnabled && !record.ipa_uid && <Popconfirm
           title="确定？"
           okType={'warning'}
           onConfirm={() => {
@@ -90,8 +91,8 @@ const UsersTable = () => {
           }}
         >
           <Button theme="light" type="warning" style={{ marginRight: 1 }}>提升</Button>
-        </Popconfirm>
-        <Popconfirm
+        </Popconfirm>}
+        {!isIPAEnabled && !record.ipa_uid && <Popconfirm
           title="确定？"
           okType={'warning'}
           onConfirm={() => {
@@ -99,20 +100,20 @@ const UsersTable = () => {
           }}
         >
           <Button theme="light" type="secondary" style={{ marginRight: 1 }}>降级</Button>
-        </Popconfirm>
-        {record.status === 1 ?
-          <Button theme="light" type="warning" style={{ marginRight: 1 }} onClick={async () => {
-            manageUser(record.username, 'disable', record);
-          }}>禁用</Button> :
-          <Button theme="light" type="secondary" style={{ marginRight: 1 }} onClick={async () => {
-            manageUser(record.username, 'enable', record);
-          }} disabled={record.status === 3}>启用</Button>}
+        </Popconfirm>}
+		{record.status === 1 ?
+		  <Button theme="light" type="warning" style={{ marginRight: 1 }} onClick={async () => {
+			manageUser(record.username, 'disable', record);
+		  }}>禁用</Button> :
+		  <Button theme="light" type="secondary" style={{ marginRight: 1 }} onClick={async () => {
+			manageUser(record.username, 'enable', record);
+		  }} disabled={record.status === 3}>启用</Button>}
         <Button theme="light" type="tertiary" style={{ marginRight: 1 }} onClick={() => {
           setEditingUser(record);
           setShowEditUser(true);
         }}>编辑</Button>
       </>
-      <Popconfirm
+      {!record.ipa_uid && <Popconfirm
         title="确定是否要删除此用户？"
         content="硬删除，此修改将不可逆"
         okType={'danger'}
@@ -124,7 +125,7 @@ const UsersTable = () => {
         }}
       >
         <Button theme="light" type="danger" style={{ marginRight: 1 }}>删除</Button>
-      </Popconfirm>
+      </Popconfirm>}
     </div>)
   }];
 
@@ -141,6 +142,7 @@ const UsersTable = () => {
   });
   const [orderBy, setOrderBy] = useState('');
   const [dropdownVisible, setDropdownVisible] = useState(false);
+  const isIPAOnly = JSON.parse(localStorage.getItem('status') || '{}').ipa_only;
 
   const setCount = (data) => {
     if (data.length >= (activePage) * ITEMS_PER_PAGE) {
@@ -221,7 +223,10 @@ const UsersTable = () => {
     }
   };
 
-  const renderStatus = (status) => {
+  const renderStatus = (status, ipaLocked) => {
+    if (ipaLocked) {
+      return <Tag size="large" color="red">FreeIPA 锁定</Tag>;
+    }
     switch (status) {
       case 1:
         return <Tag size="large">已激活</Tag>;
@@ -348,11 +353,11 @@ const UsersTable = () => {
         pageSizeOpts: [10, 20, 50, 100],
         onPageChange: handlePageChange
       }} loading={loading} />
-      <Button theme="light" type="primary" style={{ marginRight: 8 }} onClick={
+      {!isIPAOnly && <Button theme="light" type="primary" style={{ marginRight: 8 }} onClick={
         () => {
           setShowAddUser(true);
         }
-      }>添加用户</Button>
+      }>添加用户</Button>}
       <Dropdown
         trigger="click"
         position="bottomLeft"

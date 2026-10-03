@@ -125,7 +125,7 @@ func CacheDecreaseUserQuota(id int, quota int64) error {
 }
 
 func CacheIsUserEnabled(userId int) (bool, error) {
-	if !common.RedisEnabled {
+	if !common.RedisEnabled || config.IPAEnabled {
 		return IsUserEnabled(userId)
 	}
 	enabled, err := common.RedisGet(fmt.Sprintf("user_enabled:%d", userId))
@@ -146,6 +146,14 @@ func CacheIsUserEnabled(userId int) (bool, error) {
 		logger.SysError("Redis set user enabled error: " + err.Error())
 	}
 	return userEnabled, err
+}
+
+func InvalidateUserEnabledCache(userId int) {
+	if common.RedisEnabled && userId != 0 {
+		if err := common.RedisDel(fmt.Sprintf("user_enabled:%d", userId)); err != nil {
+			logger.SysError("Redis user status cache invalidation error: " + err.Error())
+		}
+	}
 }
 
 func CacheGetGroupModels(ctx context.Context, group string) ([]string, error) {

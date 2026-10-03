@@ -54,6 +54,9 @@ func getWeChatIdByCode(code string) (string, error) {
 }
 
 func WeChatAuth(c *gin.Context) {
+	if rejectOutsideIPA(c) {
+		return
+	}
 	ctx := c.Request.Context()
 	if !config.WeChatAuthEnabled {
 		c.JSON(http.StatusOK, gin.H{
@@ -84,7 +87,7 @@ func WeChatAuth(c *gin.Context) {
 			return
 		}
 	} else {
-		if config.RegisterEnabled {
+		if config.CanRegister() {
 			user.Username = "wechat_" + strconv.Itoa(model.GetMaxUserId()+1)
 			user.DisplayName = "WeChat User"
 			user.Role = model.RoleCommonUser

@@ -1,4 +1,5 @@
 import { useState, useEffect } from 'react';
+import { useSelector } from 'react-redux';
 import { showError, showSuccess } from 'utils/common';
 
 import Table from '@mui/material/Table';
@@ -21,6 +22,7 @@ import EditeModal from './component/EditModal';
 
 // ----------------------------------------------------------------------
 export default function Users() {
+  const siteInfo = useSelector((state) => state.siteInfo);
   const [users, setUsers] = useState([]);
   const [activePage, setActivePage] = useState(0);
   const [searching, setSearching] = useState(false);
@@ -142,9 +144,9 @@ export default function Users() {
       <Stack direction="row" alignItems="center" justifyContent="space-between" mb={2.5}>
         <Typography variant="h4">用户</Typography>
 
-        <Button variant="contained" color="primary" startIcon={<IconPlus />} onClick={() => handleOpenModal(0)}>
+        {!siteInfo.ipa_only && <Button variant="contained" color="primary" startIcon={<IconPlus />} onClick={() => handleOpenModal(0)}>
           新建用户
-        </Button>
+        </Button>}
       </Stack>
       <Card>
         <Box component="form" onSubmit={searchUsers} noValidate sx={{marginTop: 2}}>
