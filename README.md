@@ -83,6 +83,8 @@ _✨ 通过标准的 OpenAI API 格式访问所有的大模型，开箱即用 �
 
 部署沿用原作者的 **PM2 + Nginx + Certbot** 方案，FreeIPA 所需的 `.env`、CA、组角色及启动差异见 [Ubuntu 24.04 克隆安装说明](./deploy-freeipa.md)。PM2 单实例部署已完成；Nginx 与 Certbot 的组合尚未完成新增功能的部署验证。当前开发内容合并并发布到 `FreeIPA` 分支后，可克隆该分支获取 FreeIPA 功能。
 
+[部署文档第 9 节](./deploy-freeipa.md#9-ubuntu-2404使用-systemctl-直接管理应用)提供 Ubuntu 24.04 直接通过 systemctl 管理应用的方案，包含独立服务账号、文件权限和服务文件；该方案尚未在本机安装启用。
+
 模型客户端使用 OpenAI 兼容入口 `http://服务器地址:端口/v1`；`/api/` 用于本系统的账号与管理功能。API Key 使用本系统生成的调用令牌。
 
 ## 功能

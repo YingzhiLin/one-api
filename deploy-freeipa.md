@@ -207,6 +207,19 @@ IPA_SYNC_FREQUENCY=300
 
 `IPA_ONLY` 默认 `false`，不设置也不会强制仅使用 IPA。已有本地账号继续使用的前提是账号未禁用且系统允许本地密码登录，原额度和令牌保持在原账号上。`REGISTER_ENABLED=false` 仅关闭新用户公开注册，不影响已有账号登录。
 
+### 迁移期间独立禁止注册
+
+迁移原数据库时，可以允许旧本地账号登录，同时禁止新用户自行注册，无需启用纯 IPA 模式：
+
+```dotenv
+REGISTER_ENABLED=false
+IPA_ONLY=false
+```
+
+`IPA_ENABLED` 按实际需要保留：`false` 使用原本地账号机制，`true` 允许 IPA 与本地账号混合使用。`REGISTER_ENABLED=false` 独立生效，后台不能通过注册开关覆盖这一部署限制；它阻止公开密码注册，以及 GitHub、OIDC、飞书、微信等登录入口首次创建账号。已存在账号的登录不因此关闭，IPA 目录同步和 IPA 身份首次映射仍可执行，管理员手工创建本地账号也仍受原有管理权限及 `IPA_ONLY` 限制。
+
+修改配置后重启应用：PM2 部署执行 `./scripts/pm2.sh restart one-api`，systemd 部署执行 `sudo systemctl restart one-api`。恢复公开注册时将 `REGISTER_ENABLED=true`，还需确保后台注册开关已开启；它不是强制打开注册的开关。
+
 **启用 IPA 会改变管理资格。** 当前实现中，即使 `IPA_ONLY=false`，旧本地 `admin/root` 也不能凭原有角色访问管理接口。切换前应先准备符合 `IPA_USER_MATCH` 且直接属于 `IPA_ROOT_GROUP_DN` 指定组的 IPA 用户，避免切换后没有可用的应用超级管理员。账号同名不会自动合并，已有安装的身份关联与数据保留要求见[数据库升级说明](./database-freeipa-upgrade.md)。
 
 下列原项目参数继续沿用，用于说明上述示例和迁移时的路径关系：
@@ -317,7 +330,156 @@ Nginx 将网站页面、`/api/` 和 `/v1/` 转发到 `http://127.0.0.1:3000`；F
 
 网站 HTTPS 证书与 `IPA_CA_CERT` 是两套用途：前者供浏览器和模型客户端验证网站，后者供应用验证 FreeIPA 的 LDAPS 服务。不要用网站证书替换 IPA CA。仅内网可达的网站不能直接照搬公网 HTTP 验证流程，应根据 DNS 条件选择 Certbot DNS 验证或企业证书；参见 [Certbot 官方说明](https://certbot.eff.org/instructions?ws=nginx&os=pip)。
 
-## 9. 常见问题与迁移
+## 9. Ubuntu 24.04：使用 systemctl 直接管理应用
+
+本节适用于 Ubuntu 24.04，以 systemd 直接运行编译后的 Go 程序。Node.js 用于前端构建，运行服务不依赖 PM2。本节的服务文件和部署步骤已编写，尚未在本机安装启用或执行重启验证；本机现有服务仍由 PM2 管理。
+
+### 9.1 服务账号与目录
+
+源码仍可克隆在任意目录，以下继续使用 `ONE_API_DIR` 指向源码根目录。构建完成后，将运行文件安装到标准系统目录；源码目录与运行目录独立。
+
+| 项目 | 路径 | 所有者与权限 |
+| --- | --- | --- |
+| 专用服务账号 | `one-api` | 系统账号，不允许交互登录，不授予 sudo |
+| 程序与工作目录 | `/opt/one-api` | root:root；目录及可执行文件 755 |
+| 应用配置 | `/etc/one-api/.env` | root:one-api；目录 750，文件 640 |
+| IPA CA | `/etc/one-api/cert/ca.crt` | root:one-api；目录 750，文件 640 |
+| SQLite 与运行数据 | `/var/lib/one-api` | one-api:one-api；目录 750，数据库文件 600 |
+| 应用文件日志 | `/var/log/one-api` | one-api:one-api；目录 750 |
+| systemd 服务文件 | `/etc/systemd/system/one-api.service` | root:root，文件 644 |
+
+以下命令需要系统管理员的 sudo 权限。若账号已经存在，先检查其用途及属性，再复用；不要覆盖另一个应用使用的同名账号。
+
+```bash
+getent passwd one-api
+# 没有上述账号时执行：
+sudo useradd --system --user-group --home-dir /var/lib/one-api \
+  --no-create-home --shell /usr/sbin/nologin one-api
+
+sudo install -d -o root -g root -m 0755 /opt/one-api
+sudo install -d -o root -g one-api -m 0750 /etc/one-api /etc/one-api/cert
+sudo install -d -o one-api -g one-api -m 0750 /var/lib/one-api /var/log/one-api
+```
+
+### 9.2 停止原服务并保存数据
+
+新安装可以直接进入下一节。已有安装先停止所有使用原数据库的应用进程，并按[数据库升级说明](./database-freeipa-upgrade.md)保存数据库、配置和旧可执行文件的备份。同一个 SQLite 数据库不能同时交给 PM2 和 systemd 两个应用进程使用。
+
+从本项目 PM2 方式切换时，在原部署用户的终端执行：
+
+```bash
+cd "$ONE_API_DIR"
+./scripts/pm2.sh stop one-api
+./scripts/pm2.sh delete one-api
+./scripts/pm2.sh save --force
+```
+
+若之前启用了本项目的 PM2 开机服务，再执行 `sudo systemctl disable --now pm2-one-api`，避免重启电脑后恢复旧进程。其他应用的 PM2 服务按其各自配置保留。
+
+### 9.3 安装程序、配置和数据库
+
+完成第 4、7 节的前端与 Go 构建。首次安装执行：
+
+```bash
+sudo install -o root -g root -m 0755 "$ONE_API_DIR/one-api" /opt/one-api/one-api
+sudo install -o root -g one-api -m 0640 "$ONE_API_DIR/.env" /etc/one-api/.env
+sudo ln -s /etc/one-api/.env /opt/one-api/.env
+```
+
+如果配置或符号链接已经存在，保留并编辑现有文件，不重复覆盖。已有 systemd 服务升级程序前先执行 `sudo systemctl stop one-api`。
+
+使用自建 IPA CA 时复制可信证书；来源路径按实际情况调整。不启用 IPA，或使用系统已信任的 CA 时可跳过此项。
+
+```bash
+sudo install -o root -g one-api -m 0640 \
+  "$ONE_API_DIR/cert/ca.crt" /etc/one-api/cert/ca.crt
+```
+
+由管理员编辑运行配置：
+
+```bash
+sudoedit /etc/one-api/.env
+```
+
+保留 `PORT`、会话密钥、账号模式、目录连接等原设置。使用 SQLite 时，确保 `SQL_DSN` 留空，并将数据库路径改为运行目录；启用 IPA 且使用上述 CA 时设置证书绝对路径：
+
+```dotenv
+SQL_DSN=
+SQLITE_PATH=/var/lib/one-api/one-api.db
+IPA_CA_CERT=/etc/one-api/cert/ca.crt
+```
+
+服务文件不设置 `PORT` 或使用 `EnvironmentFile`，应用会在 `/opt/one-api` 工作目录通过符号链接读取 dotenv 配置。这样无需将 bind 密码改写为 systemd 的环境文件格式。
+
+**迁移已有 SQLite 时**，先将 `ONE_API_DB` 设为原 `SQLITE_PATH` 解析后的实际绝对路径。下例假定文件在源码根目录；原文件位于 `data/` 时应改为 `"$ONE_API_DIR/data/one-api.db"`。目标已有数据库时先备份，不覆盖运行中的数据库。
+
+```bash
+ONE_API_DB="$ONE_API_DIR/one-api.db"
+sudo install -o one-api -g one-api -m 0600 \
+  "$ONE_API_DB" /var/lib/one-api/one-api.db
+for one_api_suffix in -wal -shm -journal; do
+  if [ -f "$ONE_API_DB$one_api_suffix" ]; then
+    sudo install -o one-api -g one-api -m 0600 \
+      "$ONE_API_DB$one_api_suffix" "/var/lib/one-api/one-api.db$one_api_suffix"
+  fi
+done
+```
+
+新安装无需复制数据库，程序首次启动会在该目录创建文件。使用 MySQL/PostgreSQL 时保留原 `SQL_DSN`，无需复制 SQLite。
+
+本服务将 `/opt`、`/etc` 和用户家目录设为只读或不可访问，写入路径限定为 `/var/lib/one-api`、`/var/log/one-api` 及隔离的临时目录。自定义数据、CA 或编码器缓存路径时，应放入对应可访问目录；需要额外写入目录时由管理员调整服务的 `ReadWritePaths`，并设置正确所有权。
+
+### 9.4 创建服务文件
+
+项目提供 [deploy/systemd/one-api.service](./deploy/systemd/one-api.service)。将它安装到系统的默认服务目录：
+
+```bash
+sudo install -o root -g root -m 0644 \
+  "$ONE_API_DIR/deploy/systemd/one-api.service" \
+  /etc/systemd/system/one-api.service
+sudo systemctl daemon-reload
+sudo systemctl enable --now one-api
+sudo systemctl status one-api --no-pager
+```
+
+服务以 `one-api` 用户运行，直接执行 `/opt/one-api/one-api`，异常退出后等待 5 秒重启。端口由运行配置的 `PORT` 决定；现有 Nginx 的上游端口应与之匹配，HTTPS 和 Certbot 沿用第 8.4 节的方案。
+
+### 9.5 启停、日志与更新
+
+```bash
+# 查看状态
+sudo systemctl status one-api --no-pager
+
+# 启动、停止、重启
+sudo systemctl start one-api
+sudo systemctl stop one-api
+sudo systemctl restart one-api
+
+# 查看启动与运行日志
+sudo journalctl -u one-api -n 100 --no-pager
+sudo journalctl -u one-api -f
+
+# 查看是否开机启动，或取消开机启动
+sudo systemctl is-enabled one-api
+sudo systemctl disable one-api
+```
+
+修改 `/etc/one-api/.env` 后执行 `sudo systemctl restart one-api`。修改服务文件后先执行 `sudo systemctl daemon-reload`，再重启。该程序没有实现配置热加载，不使用 `systemctl reload` 更新应用配置。
+
+程序升级时，先备份数据库和旧程序，停止服务，安装新编译产物，再启动：
+
+```bash
+sudo systemctl stop one-api
+sudo install -o root -g root -m 0755 "$ONE_API_DIR/one-api" /opt/one-api/one-api
+sudo systemctl start one-api
+sudo systemctl status one-api --no-pager
+```
+
+运行目录与源码目录分开后，迁移电脑需要保存 `/etc/one-api`、`/var/lib/one-api`、必要日志与服务文件，不能仅复制克隆目录。权限问题可用 `namei -l /opt/one-api/.env` 查看目录和链接权限，并确认服务账号可读取配置及 CA、写入数据库和日志目录。
+
+systemd 参数依据 Ubuntu 24.04 自带的 `man systemd.service`、`man systemd.exec`，服务账号创建参数见 `man useradd`。
+
+## 10. 常见问题与迁移
 
 | 现象 | 检查方法 |
 | --- | --- |
