@@ -81,9 +81,7 @@ _✨ 通过标准的 OpenAI API 格式访问所有的大模型，开箱即用 �
 
 **新增 FreeIPA 功能当前仅通过了克隆源码安装方式的验证**：Ubuntu 24.04、默认前端主题、本机 Go 进程、SQLite 和 FreeIPA 接入。其他安装方式（Docker、Docker Compose、上游预编译发行包、宝塔面板等）尚未完成新增功能的验证；使用镜像或发行包时须确认其包含 FreeIPA 更新。
 
-部署沿用原作者的 **PM2 + Nginx + Certbot** 方案，FreeIPA 所需的 `.env`、CA、组角色及启动差异见 [Ubuntu 24.04 克隆安装说明](./deploy-freeipa.md)。PM2 单实例部署已完成；Nginx 与 Certbot 的组合尚未完成新增功能的部署验证。当前开发内容合并并发布到 `FreeIPA` 分支后，可克隆该分支获取 FreeIPA 功能。
-
-[部署文档第 9 节](./deploy-freeipa.md#9-ubuntu-2404使用-systemctl-直接管理应用)提供 Ubuntu 24.04 直接通过 systemctl 管理应用的方案，包含独立服务账号、文件权限和服务文件；该方案尚未在本机安装启用。
+FreeIPA 分支的 [Ubuntu 24.04 克隆安装说明](./deploy-freeipa.md)采用普通部署账号构建、非登录服务账号 `one-api` 运行的方案，明确 nvm/Node.js、Go 构建、服务账号、文件权限及运行配置的职责。systemd 直接管理应用，Nginx 与 Certbot 提供网站 HTTPS。专用非登录账号方案及 Nginx/Certbot 组合尚未在本机完成部署验证；`FreeIPA` 分支已发布，可克隆获取新增功能。
 
 模型客户端使用 OpenAI 兼容入口 `http://服务器地址:端口/v1`；`/api/` 用于本系统的账号与管理功能。API Key 使用本系统生成的调用令牌。
 
@@ -446,7 +444,7 @@ graph LR
 
 `IPA_ONLY` 未设置或为 `false` 时，已有本地账号仍可登录和使用原额度、令牌，前提是账号未禁用且系统允许本地密码登录。`REGISTER_ENABLED=false` 只关闭公开注册，不影响已有账号登录。但当前实现中，只要 `IPA_ENABLED=true`，管理接口就要求 IPA 身份及对应应用角色组资格；旧本地 `admin/root` 不再凭原有角色取得管理权限，即使 `IPA_ONLY=false`。启用 IPA 前应先准备至少一个具备应用超级管理员组资格且符合账号匹配条件的 IPA 用户。
 
-升级已有 SQLite 安装时，保持原数据库路径；可在 `.env` 中使用 `SQLITE_PATH=./one-api.db` 或原有绝对路径。PM2 的工作目录应是项目根目录，使 `.env`、数据库和 `IPA_CA_CERT` 相对路径指向原文件。
+升级已有 SQLite 安装时须继续使用原业务数据库。按部署说明切换到专用服务目录时，先停止原实例并复制原数据库，再将运行配置 `/etc/one-api/.env` 的 `SQLITE_PATH` 指向 `/var/lib/one-api/one-api.db`；不要只改变路径而创建空库。服务工作目录为 `/opt/one-api`，IPA CA 使用运行配置中的绝对路径。
 
 FreeIPA 在已有 `users` 表增加 3 个字段和 2 个普通索引，没有新增表或视图。启动时沿用原项目自动迁移；旧本地账号不会自动关联 IPA 身份。升级前的备份、账号切换和回退要求见 [数据库升级说明](./database-freeipa-upgrade.md)。
 

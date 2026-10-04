@@ -1,71 +1,97 @@
-# Ubuntu 24.04 克隆安装说明
+# Ubuntu 24.04：以非登录账号部署 FreeIPA 版 One API
 
-更新日期：2026-10-04。适用于包含 FreeIPA 更新的 One API 源码；安装时使用 `FreeIPA` 分支（区分大小写）。
+更新日期：2026-10-04。安装入口为已发布的 `FreeIPA` 分支，分支名称区分大小写。
 
-## 1. 安装范围
+## 1. 部署方式与账号职责
 
-**新增 FreeIPA 功能目前仅通过了克隆源码安装方式的验证**。已执行的环境为 Ubuntu 24.04 x86_64、Go 1.27.1、Node.js 26.9.0、npm 11.19.1，使用默认主题、SQLite 和本机 `go run .` 启动方式。Docker、Docker Compose、上游预编译包及其他主题的完整安装流程尚未验证。
+本项目在原 One API 上增加 FreeIPA 账号接入。本文采用 **普通部署账号构建 → 管理员安装 → 非登录账号运行** 的流程：systemd 直接运行编译后的 Go 程序，Nginx 提供反向代理，Certbot 管理网站 HTTPS 证书。
 
-本项目是在原 One API 上增加 FreeIPA 接入的扩展。常驻部署沿用作者的 **PM2 + Nginx + Certbot** 方案，通用安装、反向代理及 HTTPS 步骤参见[作者部署教程](https://justsong.cn/page/how-to-deploy-a-website)。本文补充本分支源码安装和 FreeIPA 所需的差异，不替代原项目的通用部署与参数说明。PM2 单实例管理已在本机完成部署，端口由 `.env` 的 `PORT` 决定；开机自启尚待管理员执行配置。Nginx 与 Certbot 的组合仍未完成本机部署验证，首次安装先以前台方式确认启动和登录。
+**FreeIPA 功能目前仅通过克隆源码安装方式的验证。** 已使用的环境为 Ubuntu 24.04 x86_64、Go 1.27.1、Node.js 26.9.0、npm 11.19.1，默认主题和 SQLite。PM2 及用户级 systemd 曾用于本机运行；本文的专用非登录账号方案尚未在本机实际部署。Docker、Docker Compose、上游预编译包、其他主题及 Nginx/Certbot 组合的完整安装流程尚未验证。
 
-当前开发分支 `feature/ipa-account-system` 的内容将合并到 `FreeIPA` 分支，以下安装命令以 `FreeIPA` 为安装入口。合入原作者的 `main` 需经原作者同意。2026-10-04 核对时，新增功能仍在本地开发工作区；实际克隆前应确认维护者已将所需更新合并并发布到目标仓库的 `FreeIPA` 分支。
+### 1.1 账号职责
 
-## 2. 准备系统与工具
+| 身份 | 职责 | 工具与权限 |
+| --- | --- | --- |
+| 普通部署账号 | 登录服务器、克隆源码、安装 nvm/Node.js、构建前端、编译 Go、准备安装文件、执行升级 | 使用自己的用户目录与构建环境；不以 root 执行 npm |
+| 系统管理员 | 安装系统软件、创建服务账号、安装程序和配置、设置权限、维护 systemd/Nginx/Certbot | 可由部署账号通过 sudo 执行，也可由另一名管理员执行 |
+| 非登录服务账号 `one-api` | 执行应用、读取配置和 CA、写数据库及日志 | 无交互登录、无 sudo、无登录密码；不安装 nvm、Node.js、Go 或 PM2 |
+| FreeIPA 应用用户 | 登录网页、调用模型及按应用角色管理额度 | 与上述 Linux 账号职责独立 |
+| LDAP bind 账号 | 在 FreeIPA 中供应用查询目录 | 不是 Linux 服务账号，也不是员工登录账号 |
 
-工具按 Ubuntu 或工具官方文档的常规方式安装，安装位置与项目克隆位置无关。已有可用工具时直接复用：
+nvm 安装在**普通部署账号**的环境中，通常为 `~/.nvm`；所有 npm 和构建命令由该账号执行。若 Go 安装在 `/usr/local/go`，由管理员安装，部署账号使用它编译。服务启动时无需加载 nvm 或部署账号的 Shell 配置。
+
+前端静态资源通过 Go embed 编入可执行文件。运行时无需 Node.js、Go 编译器或 PM2，但仍需对应的系统动态库；不能将使用 CGO 编译的程序视为可在任何 Linux 上运行的完全静态文件。应用以 `one-api` 账号运行，部署账号退出登录后服务仍运行，开机启动不依赖用户会话或 linger。
+
+### 1.2 源码目录与运行目录
+
+源码可克隆在部署账号可读写的任意目录。编译后将运行文件安装到标准位置，不要求服务账号访问部署账号的家目录。
+
+| 内容 | 位置 | 所有者与权限 |
+| --- | --- | --- |
+| 源码、nvm 与前端依赖 | 部署账号选择的目录及自己的用户目录 | 部署账号管理 |
+| 程序与工作目录 | `/opt/one-api` | root:root；目录及程序 755 |
+| 运行配置 | `/etc/one-api/.env` | root:one-api；目录 750，文件 640 |
+| IPA CA | `/etc/one-api/cert/ca.crt` | root:one-api；目录 750，文件 640 |
+| SQLite 与运行数据 | `/var/lib/one-api` | one-api:one-api；目录 750，数据库文件 600 |
+| 应用文件日志 | `/var/log/one-api` | one-api:one-api；目录 750 |
+| 服务文件 | `/etc/systemd/system/one-api.service` | root:root，文件 644 |
+
+后续代码块默认在普通部署账号的 Bash 终端执行；带 sudo 的命令需要管理员权限。无需切换或登录 `one-api` 账号。
+
+## 2. 准备构建工具
+
+先检查是否已有可用工具：
 
 ```bash
-command -v git curl gcc make go node npm nginx pm2 certbot
+command -v git curl gcc make go node npm nginx certbot
 ```
 
-SQLite 驱动需要 CGO 和 C 编译器。Ubuntu 基础依赖可按默认位置安装：
+SQLite 驱动使用 CGO，需要 C 编译器。由管理员安装 Ubuntu 系统依赖：
 
 ```bash
 sudo apt update
 sudo apt install -y git curl ca-certificates build-essential xz-utils
 ```
 
-| 工具 | 常规安装方式与位置 |
-| --- | --- |
-| Go | 按 [Go 官方安装文档](https://go.dev/doc/install)安装，Linux 官方发行包通常安装到 `/usr/local/go`，并将 `/usr/local/go/bin` 加入 PATH；已有安装时按官方升级步骤处理 |
-| Node.js 与 npm | 沿用作者通过 nvm 安装的方式，使用 nvm 默认目录 `~/.nvm`；版本选择参考 [Node.js 官方下载页面](https://nodejs.org/en/download)。本功能不要求定制安装目录 |
-| PM2 | 在所选 Node.js 环境执行 `npm install -g pm2`，使用 npm 默认的全局安装位置；nvm 环境下通常不需要 sudo |
-| Nginx | 通过 Ubuntu 软件包安装：`sudo apt install nginx`，站点配置沿用 `/etc/nginx/` |
-| Certbot | 按 [Certbot 官方 Ubuntu/Nginx 安装指引](https://certbot.eff.org/instructions?ws=nginx&os=snap)安装，使用其默认位置及续期机制；网站证书通常保存在 `/etc/letsencrypt/` |
+| 工具 | 安装方式 | 执行账号 |
+| --- | --- | --- |
+| Go | 按 [Go 官方安装说明](https://go.dev/doc/install)安装，Linux 官方发行包通常位于 /usr/local/go；加入部署账号 PATH | 管理员安装，部署账号使用 |
+| nvm、Node.js、npm | 按 [nvm 官方说明](https://github.com/nvm-sh/nvm#installing-and-updating)安装到部署账号的用户目录 | 普通部署账号，不加 sudo |
+| Nginx、Certbot | 使用第 9 节的 Ubuntu 软件包与配置步骤 | 管理员 |
 
-### 2.1 安装 Node.js、npm 与 PM2
+### 2.1 在部署账号下安装 nvm 和 Node.js
 
-已有 Node.js 和 npm 时可以保留现有环境，直接安装 PM2。以下沿用作者的 nvm 方式，安装到其默认目录，使用已用于本次构建的 Node.js 版本：
+已有可用的 Node.js/npm 可复用。需要安装时，以下命令由普通部署账号执行，不使用 sudo，也不在服务账号下执行：
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.8/install.sh | bash
-# 安装后新开终端，或在当前 Bash 终端加载 nvm。
-export NVM_DIR="${XDG_CONFIG_HOME:-$HOME}/.nvm"
+# 安装后新开终端，或按安装器使用的默认目录规则加载 nvm。
+export NVM_DIR="$HOME/.nvm"
+if [ -n "${XDG_CONFIG_HOME:-}" ]; then
+  export NVM_DIR="$XDG_CONFIG_HOME/nvm"
+fi
 . "$NVM_DIR/nvm.sh"
 nvm install 26.9.0
-nvm alias default 26.9.0
 nvm use 26.9.0
-npm install -g pm2@7.0.4
-command -v node npm pm2
+nvm alias default 26.9.0
 ```
 
-以上 nvm 安装方式见 [nvm 官方说明](https://github.com/nvm-sh/nvm#installing-and-updating)。PM2 7.0.4 已用于本次服务部署；这里固定版本方便复现。nvm 安装的 npm 全局工具属于当前用户，不需要 `sudo npm install`。后续构建、PM2 启动和开机服务配置均使用同一个普通部署用户。
+以上固定版本用于复现已使用的构建环境，不表示最新版本。已有 nvm 时以其安装配置为准；其他版本需自行确认构建兼容性。nvm 安装及目录规则见 [官方文档](https://github.com/nvm-sh/nvm#installing-and-updating)。
 
-安装后确认构建工具可用：
+管理员安装 Go 后，部署账号在构建终端中设置 PATH 并检查版本：
 
 ```bash
+export PATH="/usr/local/go/bin:$PATH"
 go version
 node --version
 npm --version
 ```
 
-第 1 节列出的版本是已验证环境的记录；其他版本的完整安装过程尚未验证。Go、Node.js 或 PM2 不必放进项目目录，FreeIPA 接入也不需要单独准备 Python 环境。
+不需要为 FreeIPA 接入安装 ldapsearch 或 Python；目录访问由 Go 程序中的 LDAP 库完成。
 
 ## 3. 克隆 FreeIPA 分支
 
-将仓库地址替换为已发布 `FreeIPA` 分支的实际地址。当前工作区的来源仓库为 `YingzhiLin/one-api`，安装时应明确选择 `FreeIPA` 分支。
-
-项目可以放在任意具有读写权限的目录。以下先设置项目的**绝对路径**，替换示例后再执行；路径包含空格时保留双引号。后续命令统一使用 `ONE_API_DIR`：
+以下由普通部署账号执行。先设置源码目录的绝对路径，路径可自行选择；包含空格时保留双引号：
 
 ```bash
 export ONE_API_DIR='/你选择的目录/one-api'
@@ -78,13 +104,11 @@ cd "$ONE_API_DIR"
 git branch --show-current
 ```
 
-后续命令在同一终端执行；新开终端时重新设置 `ONE_API_DIR` 为实际项目根目录。克隆目标目录应为空或尚不存在；已有安装从其项目根目录继续，不重新克隆覆盖。
+远端检查应返回 `refs/heads/FreeIPA`，克隆后应显示 `FreeIPA`。2026-10-04 已发布该分支，无需等待合入上游 main。已有克隆目录不要重复覆盖；新开终端时重新设置 `ONE_API_DIR` 并加载构建工具环境。不要使用 sudo git clone 或 sudo npm install，以免源码和依赖归 root 所有。
 
-`git ls-remote` 应返回 `refs/heads/FreeIPA`，克隆后 `git branch --show-current` 应输出 `FreeIPA`。若远端没有该分支，应先确认维护者已发布。还应核对所需开发改动已合并，以及源码中的 `common/ipa/`、`.env.example` 中的 `IPA_ENABLED`；分支存在不代表已经包含全部更新。合并前的开发验证可使用 `feature/ipa-account-system`，其余安装步骤相同。
+## 4. 构建前端和 Go 程序
 
-## 4. 构建默认前端
-
-后端通过 Go embed 将前端资源编入程序，必须先构建前端。以下直接输出到后端需要的 `web/build/default`：
+全部构建命令由普通部署账号执行。后端编译会嵌入前端资源，因此先构建默认主题：
 
 ```bash
 cd "$ONE_API_DIR/web/default"
@@ -92,11 +116,13 @@ npm install
 BUILD_PATH=../build/default GENERATE_SOURCEMAP=false \
   node node_modules/react-scripts/scripts/build.js
 cd "$ONE_API_DIR"
+go mod download
+CGO_ENABLED=1 go build -trimpath -o one-api .
 ```
 
-构建结果应包含 `web/build/default/index.html`。本分支验证使用 `THEME=default`；仅构建默认主题时不要选择 `air` 或 `berry`。
+构建结果应包含 `web/build/default/index.html` 及项目根目录的 `one-api` 可执行文件。仅构建默认主题时配置 `THEME=default`。现有 ESLint 告警不一定代表失败，应检查命令退出状态和生成的文件。
 
-若遇到 `Cannot find module 'ajv/dist/compile/codegen'`，本机已使用以下命令修复依赖树，再执行上述构建命令：
+若遇到 `Cannot find module 'ajv/dist/compile/codegen'`，已使用过的处理方式是修复依赖树后重新构建：
 
 ```bash
 cd "$ONE_API_DIR/web/default"
@@ -104,9 +130,10 @@ npm install --no-save --no-package-lock 'ajv@^8.8.2'
 BUILD_PATH=../build/default GENERATE_SOURCEMAP=false \
   node node_modules/react-scripts/scripts/build.js
 cd "$ONE_API_DIR"
+CGO_ENABLED=1 go build -trimpath -o one-api .
 ```
 
-已有的 ESLint 告警不一定代表构建失败，应检查命令退出状态及生成的资源。前端源码修改后，需要重新构建前端并重新编译或启动后端。
+编译完成后，只安装可执行文件、运行配置和所需证书。前端源码更新后，需重新构建前端并编译 Go 程序。
 
 ## 5. 准备 FreeIPA
 
@@ -128,17 +155,17 @@ cd "$ONE_API_DIR"
 
 ## 6. 放置 CA 并配置 .env
 
-在项目根目录创建运行目录，从 IPA 管理员取得可信的 PEM CA 文件：
+以下由普通部署账号执行。源码目录中的配置是安装准备文件；第 7 节会将其安装到 `/etc/one-api/.env`，启用服务后以该运行配置为准。从 IPA 管理员取得可信的 PEM CA 文件：
 
 ```bash
 cd "$ONE_API_DIR"
-mkdir -p cert data logs
+mkdir -p cert
 cp /可信来源/ipa-ca.crt cert/ca.crt
 cp .env.example .env
 chmod 600 .env
 ```
 
-已有 `.env` 时直接编辑，避免复制示例覆盖原配置。证书示例使用相对路径，因此启动时工作目录必须是项目根目录。
+已有 `.env` 时直接编辑，避免复制示例覆盖原配置。`cert/ca.crt` 在此处保存待安装的 CA，服务运行时使用 `/etc/one-api/cert/ca.crt`。不使用自建 CA 时跳过证书复制。
 
 以下是新安装的 SQLite + 纯 IPA 模式配置示例。域名、DN、密码和会话密钥均需替换为自己的值。端口 3000 仅为示例，实际以 `.env` 的 `PORT` 为准，后面的访问地址和 Nginx 上游端口应同步调整。已有安装应保留原数据库与会话密钥，在原 `.env` 中增加 IPA 配置，升级前先阅读[数据库升级说明](./database-freeipa-upgrade.md)：
 
@@ -153,9 +180,9 @@ HTTPS_PROXY=
 # 固定密钥让正常重启后的会话保持可验证。
 SESSION_SECRET=REPLACE_WITH_RANDOM_SESSION_SECRET
 
-# SQLite 路径相对于项目根目录；本示例不启用 Redis。
+# SQLite 使用服务账号的数据目录；本示例不启用 Redis。
 SQL_DSN=
-SQLITE_PATH=./one-api.db
+SQLITE_PATH=/var/lib/one-api/one-api.db
 REDIS_CONN_STRING=
 
 REGISTER_ENABLED=false
@@ -173,7 +200,7 @@ IPA_ROOT_GROUP_DN=cn=one-api-roots,cn=groups,cn=accounts,dc=example,dc=com
 
 IPA_BIND_DN=uid=app_bind_oneapi,cn=users,cn=accounts,dc=example,dc=com
 IPA_BIND_PASSWORD="REPLACE_WITH_REAL_BIND_PASSWORD"
-IPA_CA_CERT=./cert/ca.crt
+IPA_CA_CERT=/etc/one-api/cert/ca.crt
 IPA_SYNC_FREQUENCY=300
 ```
 
@@ -187,7 +214,7 @@ IPA_SYNC_FREQUENCY=300
 | `IPA_URL` | LDAP 连接地址；推荐 `ldaps://域名:636`，域名须与证书匹配 |
 | `IPA_BASE_DN` | IPA 目录的 Base DN，例如 `dc=example,dc=com` |
 | `IPA_USER_BASE_DN` | 用户查询范围；未设置时使用 `IPA_BASE_DN` |
-| `IPA_BIND_PASSWORD` | 专用查询账号密码，保存在 `.env`，不要放入 PM2 配置或版本库 |
+| `IPA_BIND_PASSWORD` | 专用查询账号密码，保存在 `.env`，不要放入服务文件、命令参数或版本库 |
 | `IPA_STARTTLS` | 默认 `false`；使用 `ldap://域名:389` 时设置为 `true` |
 | `IPA_ONLY` | `true` 只允许 IPA 身份；列表和搜索过滤本地 root 等本地账号，空数据库也不创建本地 root |
 | `IPA_USER_MATCH` | 按登录名 uid 匹配，忽略大小写；只有 `*` 为通配符，空值按 `*`；管理员也必须匹配 |
@@ -218,7 +245,7 @@ IPA_ONLY=false
 
 `IPA_ENABLED` 按实际需要保留：`false` 使用原本地账号机制，`true` 允许 IPA 与本地账号混合使用。`REGISTER_ENABLED=false` 独立生效，后台不能通过注册开关覆盖这一部署限制；它阻止公开密码注册，以及 GitHub、OIDC、飞书、微信等登录入口首次创建账号。已存在账号的登录不因此关闭，IPA 目录同步和 IPA 身份首次映射仍可执行，管理员手工创建本地账号也仍受原有管理权限及 `IPA_ONLY` 限制。
 
-修改配置后重启应用：PM2 部署执行 `./scripts/pm2.sh restart one-api`，systemd 部署执行 `sudo systemctl restart one-api`。恢复公开注册时将 `REGISTER_ENABLED=true`，还需确保后台注册开关已开启；它不是强制打开注册的开关。
+运行配置保存在 `/etc/one-api/.env`，通过 `sudoedit /etc/one-api/.env` 修改，然后执行 `sudo systemctl restart one-api`。修改源码目录中的准备文件不会自动更新已安装的配置。恢复公开注册时将 `REGISTER_ENABLED=true`，还需确保后台注册开关已开启；它不是强制打开注册的开关。
 
 **启用 IPA 会改变管理资格。** 当前实现中，即使 `IPA_ONLY=false`，旧本地 `admin/root` 也不能凭原有角色访问管理接口。切换前应先准备符合 `IPA_USER_MATCH` 且直接属于 `IPA_ROOT_GROUP_DN` 指定组的 IPA 用户，避免切换后没有可用的应用超级管理员。账号同名不会自动合并，已有安装的身份关联与数据保留要求见[数据库升级说明](./database-freeipa-upgrade.md)。
 
@@ -227,7 +254,7 @@ IPA_ONLY=false
 | 配置 | 本示例中的用法 |
 | --- | --- |
 | `SQL_DSN` | 留空使用 SQLite；已有 MySQL/PostgreSQL 安装保留原配置 |
-| `SQLITE_PATH` | 默认 `one-api.db`；示例 `./one-api.db` 位于项目根目录。也可使用其他相对或绝对路径，父目录须已存在；升级时必须指向原数据库 |
+| `SQLITE_PATH` | 默认 `one-api.db`；本文明确使用 `/var/lib/one-api/one-api.db`。迁移时先复制原数据库，再设置目标路径；不要指向空文件而丢失旧账号数据 |
 | `SESSION_SECRET` | 保留固定密钥，避免正常重启后会话失效 |
 | `THEME` | 本分支验证使用 `default` |
 | `REDIS_CONN_STRING` | 本示例留空；已有 Redis 配置继续沿用 |
@@ -241,131 +268,17 @@ IPA_ONLY=false
 
 程序会从**当前工作目录**自动读取 `.env`。启动前已导出的同名环境变量优先于文件；无需执行 `source .env`，它是 dotenv 配置文件，不是 shell 脚本。调整账号匹配、CA、端口等配置后需重启。
 
-已有安装迁移时，保持原来的 `SQLITE_PATH`。例如已有数据在项目根目录 `one-api.db`，应设置 `SQLITE_PATH=./one-api.db`；改成新的路径会创建空数据库。
+已有安装迁移时，先记录旧 `SQLITE_PATH` 对应的真实文件，第 7 节会在停止旧实例后复制到 `/var/lib/one-api/one-api.db`。不要仅修改路径就启动；指向不存在的文件会创建空数据库。服务从 `/opt/one-api` 工作目录读取配置，不能将旧的项目相对路径直接用于新服务。
 
-## 7. 启动与检查
+## 7. 创建服务账号并安装运行文件
 
-先下载 Go 依赖并以前台方式启动：
+以下带 sudo 的操作由管理员执行；若部署账号具备 sudo 权限，可在其终端直接完成。整个流程不需要登录服务账号。
 
-```bash
-cd "$ONE_API_DIR"
-go mod download
-CGO_ENABLED=1 go run .
-```
+### 7.1 迁移安装：停止原实例并保存数据
 
-看到数据库迁移完成、服务启动日志后，在另一个终端检查：
+新安装跳过本小节。迁移已有安装前，记录原配置、会话密钥及 SQLite 的实际路径，并阅读[数据库升级说明](./database-freeipa-upgrade.md)。
 
-```bash
-curl --noproxy '*' -f http://127.0.0.1:3000/api/status
-curl --noproxy '*' -I http://127.0.0.1:3000/login
-ss -ltnp | grep ':3000'
-```
-
-纯 IPA 配置下，状态响应应包含 `ipa_login=true`、`ipa_only=true`、`registration_enabled=false`。监听日志可能显示 localhost，但实际监听全部网卡。其他电脑使用 `http://服务器局域网地址:3000/login`；客户端网络和防火墙也须允许该端口。
-
-使用员工的 IPA 登录名（例如 `h320001`）与其密码登录，账号密码修改仍在 FreeIPA 完成。纯 IPA 模式不使用本地 root 登录。
-
-管理员登录后检查用户列表和组角色，配置模型渠道、分配额度，然后创建模型调用令牌。客户端配置 OpenAI 兼容 Base URL 为 `http://服务器地址:3000/v1`，API Key 填写该令牌；`/api/` 是管理接口，IPA 密码和 bind 密码均不能作为模型 API Key。
-
-可以在项目根目录生成可执行文件，用于后续常驻运行：
-
-```bash
-CGO_ENABLED=1 go build -trimpath -o one-api .
-./one-api
-```
-
-同一个数据库只运行一个该应用进程。前台 `go run` 用 Ctrl+C 停止后，再启动可执行文件。源码或前端更新后需要重新构建。
-
-## 8. 沿用作者的 PM2 + Nginx + Certbot 方案
-
-按[作者教程](https://justsong.cn/page/how-to-deploy-a-website)安装并配置 PM2、Nginx、Certbot。作者教程以 Ubuntu 20.04 和另一个 Go 应用为示例；本分支平台为 Ubuntu 24.04，程序名称改为 `one-api`，后端端口以本项目 `.env` 中的 `PORT` 为准。本例为 3000。工具按第 2 节的常规方式安装，配置目录使用各工具的默认位置；项目源码可位于任意目录。不直接照搬教程的旧版工具下载命令。
-
-### 8.1 PM2：部署与启动
-
-完成第 2.1 节的 PM2 安装、第 7 节的 Go 可执行文件构建，并停止前台实例后，以普通部署用户在项目根目录执行。升级已有服务时先按[数据库升级说明](./database-freeipa-upgrade.md)停止旧服务并备份：
-
-```bash
-cd "$ONE_API_DIR"
-mkdir -p logs
-./scripts/pm2.sh start ecosystem.config.js
-./scripts/pm2.sh save
-./scripts/pm2.sh status
-```
-
-`ecosystem.config.js` 自动以其所在目录为工作目录，启动项目中的 `one-api` 可执行文件，不设置 `PORT` 或数据库等环境变量；程序直接读取 `.env`。`scripts/pm2.sh` 将 PM2 状态保存在项目的 `.runtime/pm2` 中，与其他 PM2 服务隔离，并清除启动终端中的应用配置覆盖。后续管理也使用该脚本。
-
-### 8.2 配置开机自启
-
-服务正常启动后，在同一个部署用户的终端执行：
-
-```bash
-cd "$ONE_API_DIR"
-./scripts/enable-pm2-startup.sh
-sudo systemctl start pm2-one-api
-sudo systemctl is-enabled pm2-one-api
-sudo systemctl status pm2-one-api --no-pager
-```
-
-`enable-pm2-startup.sh` 保存进程列表并通过 sudo 配置 `pm2-one-api` 开机服务，需要部署用户输入 sudo 密码。Go 程序使用单实例，不使用 PM2 cluster。启动配置将记录绝对路径，移动文件夹到新电脑后需重新创建。使用 nvm 升级 Node.js 后，应在选定版本下重新安装 PM2，并更新开机服务配置，避免服务仍引用旧 Node 路径。PM2 安装、配置及启动保存的通用说明见 [PM2 官方文档](https://pm2.keymetrics.io/docs/usage/startup/)。
-
-### 8.3 日常管理与配置修改
-
-```bash
-cd "$ONE_API_DIR"
-./scripts/pm2.sh status
-./scripts/pm2.sh logs one-api --lines 100
-./scripts/pm2.sh restart one-api
-./scripts/pm2.sh stop one-api
-```
-
-修改 IPA 配置后，使用 `./scripts/pm2.sh restart one-api`；查看运行状态和日志使用 `./scripts/pm2.sh status`、`./scripts/pm2.sh logs one-api --lines 100`，停止使用 `./scripts/pm2.sh stop one-api`。程序会重新读取工作目录中的 `.env`；本项目启动脚本不会传入端口等配置覆盖。若绕过该脚本直接启动，外部已设置的同名环境变量仍会优先。bind 密码放在受保护的 `.env` 中，CA 放在 `cert/ca.crt`，不必将密码复制到 PM2 命令或配置。
-
-### 8.4 Nginx 与 Certbot：网站 HTTPS 保持原方案
-
-Nginx 将网站页面、`/api/` 和 `/v1/` 转发到 `http://127.0.0.1:3000`；FreeIPA 登录仍经过同一个应用入口，无需另设 LDAP 反向代理。按作者方案用 Certbot 申请并续期网站证书，由 Nginx 提供 HTTPS。域名、证书联系邮箱、DNS 解析和 80/443 的可达性应使用实际部署资料。
-
-对 One API 流式模型响应，Nginx 应关闭代理缓冲（`proxy_buffering off;`），并按模型耗时设置读取超时；参见 [Nginx 代理配置文档](https://nginx.org/en/docs/http/ngx_http_proxy_module.html)。本分支应用仍监听所有网卡；生产部署时由防火墙限制后端端口，仅通过 Nginx 入口访问。
-
-部署后员工访问 `https://实际域名/login`，模型客户端使用 `https://实际域名/v1`。应用后台的服务器地址也应填写对外 HTTPS 地址。
-
-网站 HTTPS 证书与 `IPA_CA_CERT` 是两套用途：前者供浏览器和模型客户端验证网站，后者供应用验证 FreeIPA 的 LDAPS 服务。不要用网站证书替换 IPA CA。仅内网可达的网站不能直接照搬公网 HTTP 验证流程，应根据 DNS 条件选择 Certbot DNS 验证或企业证书；参见 [Certbot 官方说明](https://certbot.eff.org/instructions?ws=nginx&os=pip)。
-
-## 9. Ubuntu 24.04：使用 systemctl 直接管理应用
-
-本节适用于 Ubuntu 24.04，以 systemd 直接运行编译后的 Go 程序。Node.js 用于前端构建，运行服务不依赖 PM2。9.1–9.5 使用专用系统账号部署，需管理员 sudo 权限；9.6 提供保留克隆目录的用户服务方式。2026-10-04 本机已使用 9.6 的方式从 PM2 切换到 systemd；专用系统账号方式尚未在本机实际安装。
-
-### 9.1 服务账号与目录
-
-源码仍可克隆在任意目录，以下继续使用 `ONE_API_DIR` 指向源码根目录。构建完成后，将运行文件安装到标准系统目录；源码目录与运行目录独立。
-
-| 项目 | 路径 | 所有者与权限 |
-| --- | --- | --- |
-| 专用服务账号 | `one-api` | 系统账号，不允许交互登录，不授予 sudo |
-| 程序与工作目录 | `/opt/one-api` | root:root；目录及可执行文件 755 |
-| 应用配置 | `/etc/one-api/.env` | root:one-api；目录 750，文件 640 |
-| IPA CA | `/etc/one-api/cert/ca.crt` | root:one-api；目录 750，文件 640 |
-| SQLite 与运行数据 | `/var/lib/one-api` | one-api:one-api；目录 750，数据库文件 600 |
-| 应用文件日志 | `/var/log/one-api` | one-api:one-api；目录 750 |
-| systemd 服务文件 | `/etc/systemd/system/one-api.service` | root:root，文件 644 |
-
-以下命令需要系统管理员的 sudo 权限。若账号已经存在，先检查其用途及属性，再复用；不要覆盖另一个应用使用的同名账号。
-
-```bash
-getent passwd one-api
-# 没有上述账号时执行：
-sudo useradd --system --user-group --home-dir /var/lib/one-api \
-  --no-create-home --shell /usr/sbin/nologin one-api
-
-sudo install -d -o root -g root -m 0755 /opt/one-api
-sudo install -d -o root -g one-api -m 0750 /etc/one-api /etc/one-api/cert
-sudo install -d -o one-api -g one-api -m 0750 /var/lib/one-api /var/log/one-api
-```
-
-### 9.2 停止原服务并保存数据
-
-新安装可以直接进入下一节。已有安装先停止所有使用原数据库的应用进程，并按[数据库升级说明](./database-freeipa-upgrade.md)保存数据库、配置和旧可执行文件的备份。同一个 SQLite 数据库不能同时交给 PM2 和 systemd 两个应用进程使用。
-
-从本项目 PM2 方式切换时，在原部署用户的终端执行：
+若原实例由本项目 PM2 管理，在原部署账号下执行：
 
 ```bash
 cd "$ONE_API_DIR"
@@ -374,11 +287,45 @@ cd "$ONE_API_DIR"
 ./scripts/pm2.sh save --force
 ```
 
-若之前启用了本项目的 PM2 开机服务，再执行 `sudo systemctl disable --now pm2-one-api`，避免重启电脑后恢复旧进程。其他应用的 PM2 服务按其各自配置保留。
+仅在原先启用了本项目 `pm2-one-api` 系统服务时，执行 `sudo systemctl disable --now pm2-one-api`。不要关闭其他项目的 PM2 服务。
 
-### 9.3 安装程序、配置和数据库
+若原实例是用户级 systemd 服务，在其所属用户下执行：
 
-完成第 4、7 节的前端与 Go 构建。首次安装执行：
+```bash
+systemctl --user disable --now one-api
+```
+
+若已有系统级实例，则执行 `sudo systemctl stop one-api`。确保旧实例已停止且不会自动恢复，再备份 SQLite；不要让两个应用实例同时使用同一个数据库。保留旧程序、配置及 SQLite 文件和存在的 -wal/-shm/-journal 文件，以便恢复。MySQL/PostgreSQL 使用其数据库工具备份。
+
+### 7.2 创建非登录账号与目录
+
+先检查同名账号：
+
+```bash
+getent passwd one-api
+```
+
+没有该账号时执行：
+
+```bash
+sudo useradd --system --user-group --home-dir /var/lib/one-api \
+  --no-create-home --shell /usr/sbin/nologin one-api
+sudo passwd --lock one-api
+```
+
+不为该账号设置登录密码，不加入 sudo 组。若同名账号已存在，先确认其用途、组和登录属性，不覆盖其他应用的账号。账号禁用密码登录不影响 systemd 以其身份启动进程。
+
+创建标准目录：
+
+```bash
+sudo install -d -o root -g root -m 0755 /opt/one-api
+sudo install -d -o root -g one-api -m 0750 /etc/one-api /etc/one-api/cert
+sudo install -d -o one-api -g one-api -m 0750 /var/lib/one-api /var/log/one-api
+```
+
+### 7.3 安装程序、配置和 CA
+
+首次安装时执行：
 
 ```bash
 sudo install -o root -g root -m 0755 "$ONE_API_DIR/one-api" /opt/one-api/one-api
@@ -386,22 +333,22 @@ sudo install -o root -g one-api -m 0640 "$ONE_API_DIR/.env" /etc/one-api/.env
 sudo ln -s /etc/one-api/.env /opt/one-api/.env
 ```
 
-如果配置或符号链接已经存在，保留并编辑现有文件，不重复覆盖。已有 systemd 服务升级程序前先执行 `sudo systemctl stop one-api`。
+配置或符号链接已存在时先核对并保留，不重复覆盖。运行时从 `/opt/one-api/.env` 链接读取 `/etc/one-api/.env`。服务账号可读取配置但不能修改程序或配置。
 
-使用自建 IPA CA 时复制可信证书；来源路径按实际情况调整。不启用 IPA，或使用系统已信任的 CA 时可跳过此项。
+使用内部 CA 时执行；未启用 IPA 或使用系统信任库时可跳过：
 
 ```bash
 sudo install -o root -g one-api -m 0640 \
   "$ONE_API_DIR/cert/ca.crt" /etc/one-api/cert/ca.crt
 ```
 
-由管理员编辑运行配置：
+核对运行配置：
 
 ```bash
 sudoedit /etc/one-api/.env
 ```
 
-保留 `PORT`、会话密钥、账号模式、目录连接等原设置。使用 SQLite 时，确保 `SQL_DSN` 留空，并将数据库路径改为运行目录；启用 IPA 且使用上述 CA 时设置证书绝对路径：
+保留实际 `PORT`、会话密钥、目录连接及账号模式。SQLite 的 `SQL_DSN` 留空，路径明确设置为：
 
 ```dotenv
 SQL_DSN=
@@ -409,12 +356,14 @@ SQLITE_PATH=/var/lib/one-api/one-api.db
 IPA_CA_CERT=/etc/one-api/cert/ca.crt
 ```
 
-服务文件不设置 `PORT` 或使用 `EnvironmentFile`，应用会在 `/opt/one-api` 工作目录通过符号链接读取 dotenv 配置。这样无需将 bind 密码改写为 systemd 的环境文件格式。
+如果不需要自建 IPA CA，可将 `IPA_CA_CERT` 留空。MySQL/PostgreSQL 保留原 `SQL_DSN`，不复制 SQLite。`.env` 是 dotenv 文件，不执行 source，也不作为 systemd EnvironmentFile 使用。
 
-**迁移已有 SQLite 时**，先将 `ONE_API_DB` 设为原 `SQLITE_PATH` 解析后的实际绝对路径。下例假定文件在源码根目录；原文件位于 `data/` 时应改为 `"$ONE_API_DIR/data/one-api.db"`。目标已有数据库时先备份，不覆盖运行中的数据库。
+### 7.4 复制已有 SQLite
+
+新安装无需执行复制，程序会创建数据库。迁移时将 `ONE_API_DB` 设置为旧 `SQLITE_PATH` 对应的真实绝对路径，不能误选源码根目录的另一份数据库。示例假定旧文件在 data 下：
 
 ```bash
-ONE_API_DB="$ONE_API_DIR/one-api.db"
+ONE_API_DB="$ONE_API_DIR/data/one-api.db"
 sudo install -o one-api -g one-api -m 0600 \
   "$ONE_API_DB" /var/lib/one-api/one-api.db
 for one_api_suffix in -wal -shm -journal; do
@@ -425,13 +374,13 @@ for one_api_suffix in -wal -shm -journal; do
 done
 ```
 
-新安装无需复制数据库，程序首次启动会在该目录创建文件。使用 MySQL/PostgreSQL 时保留原 `SQL_DSN`，无需复制 SQLite。
+上述命令只在原实例已停止、目标库尚不存在或已妥善备份时执行。不得覆盖运行中的数据库。目标已有旧的 SQLite 旁文件时，应在停机后与原库一起保存并清理，不能混用两份数据库的旁文件。
 
-本服务将 `/opt`、`/etc` 和用户家目录设为只读或不可访问，写入路径限定为 `/var/lib/one-api`、`/var/log/one-api` 及隔离的临时目录。自定义数据、CA 或编码器缓存路径时，应放入对应可访问目录；需要额外写入目录时由管理员调整服务的 `ReadWritePaths`，并设置正确所有权。
+## 8. 启动、检查与日常管理
 
-### 9.4 创建服务文件
+### 8.1 安装服务并开机启动
 
-项目提供 [deploy/systemd/one-api.service](./deploy/systemd/one-api.service)。将它安装到系统的默认服务目录：
+项目提供 [deploy/systemd/one-api.service](./deploy/systemd/one-api.service)。由管理员安装到系统服务目录：
 
 ```bash
 sudo install -o root -g root -m 0644 \
@@ -442,100 +391,147 @@ sudo systemctl enable --now one-api
 sudo systemctl status one-api --no-pager
 ```
 
-服务以 `one-api` 用户运行，直接执行 `/opt/one-api/one-api`，异常退出后等待 5 秒重启。端口由运行配置的 `PORT` 决定；现有 Nginx 的上游端口应与之匹配，HTTPS 和 Certbot 沿用第 8.4 节的方案。
+服务文件指定 `User=one-api`、`Group=one-api`，工作目录 `/opt/one-api`，执行 `/opt/one-api/one-api --log-dir /var/log/one-api`。异常退出后等待 5 秒重启；开机由系统管理器启动，不依赖部署账号登录。服务文件不覆盖 PORT，端口由运行配置决定。
 
-### 9.5 启停、日志与更新
+当前服务文件使用只读系统目录、禁止访问用户家目录及隔离的临时目录。可写业务目录为 `/var/lib/one-api` 和 `/var/log/one-api`。自定义数据或缓存路径应选择服务可写目录；需要其他持久写入目录时同步调整服务文件的 ReadWritePaths 与文件所有权。
+
+### 8.2 检查部署状态与登录
+
+以下例子使用 3000；实际 PORT 不同则同步替换检查地址和 Nginx 上游：
 
 ```bash
-# 查看状态
-sudo systemctl status one-api --no-pager
+sudo systemctl show one-api -p User -p Group -p ActiveState -p SubState
+curl --noproxy '*' -f http://127.0.0.1:3000/api/status
+ss -ltnp 'sport = :3000'
+```
 
-# 启动、停止、重启
+服务应以 one-api 用户运行，状态为 active/running。纯 IPA 配置时状态接口应包含 `ipa_login=true`、`ipa_only=true`、`registration_enabled=false`。
+
+员工使用 IPA 登录名（如 `h320001`）及密码登录，密码管理仍在 FreeIPA 完成。纯 IPA 模式不使用本地 root。管理员应确认用户列表、组角色及额度管理可用，再配置模型渠道与调用令牌。模型客户端使用 `https://实际域名/v1`；模型 API Key 是本系统令牌，不是 IPA 密码或 bind 密码。
+
+程序监听所有网卡；启用网站入口后，防火墙应限制后端端口的直接访问，网页、`/api/` 和 `/v1/` 均通过 Nginx 访问。
+
+### 8.3 启停、配置修改和日志
+
+由管理员或具备相应 sudo 权限的部署账号执行：
+
+```bash
 sudo systemctl start one-api
 sudo systemctl stop one-api
 sudo systemctl restart one-api
+sudo systemctl status one-api --no-pager
+sudo systemctl is-enabled one-api
 
-# 查看启动与运行日志
 sudo journalctl -u one-api -n 100 --no-pager
 sudo journalctl -u one-api -f
-
-# 查看是否开机启动，或取消开机启动
-sudo systemctl is-enabled one-api
-sudo systemctl disable one-api
 ```
 
-修改 `/etc/one-api/.env` 后执行 `sudo systemctl restart one-api`。修改服务文件后先执行 `sudo systemctl daemon-reload`，再重启。该程序没有实现配置热加载，不使用 `systemctl reload` 更新应用配置。
+修改运行配置使用 `sudoedit /etc/one-api/.env`，然后执行 `sudo systemctl restart one-api`。修改服务文件后先执行 `sudo systemctl daemon-reload`，再重启。应用不支持配置热加载，不使用 systemctl reload。需要取消开机启动时执行 `sudo systemctl disable one-api`；同时停止可使用 disable --now。
 
-程序升级时，先备份数据库和旧程序，停止服务，安装新编译产物，再启动：
+部署账号的 nvm/Node.js 升级不影响已经运行的 Go 程序；重新构建并安装新程序后，服务才使用更新的产物。
+
+## 9. Nginx 与网站 HTTPS
+
+由管理员安装及配置。反向代理与 HTTPS 的用途沿用[原作者的部署介绍](https://justsong.cn/page/how-to-deploy-a-website)，应用进程由本说明的非登录账号运行。
+
+Ubuntu 软件包安装示例：
+
+```bash
+sudo apt install -y nginx certbot python3-certbot-nginx
+sudo systemctl enable --now nginx
+```
+
+上述 Certbot 的 Python 依赖由 Ubuntu 包管理器提供，不是应用的 Python 环境；one-api 服务账号不需要自行安装。Nginx 的 Ubuntu 安装步骤见 [官方说明](https://ubuntu.com/server/docs/how-to/web-services/install-nginx/)。
+
+在 `/etc/nginx/sites-available/one-api` 配置网站，替换域名和上游端口：
+
+```nginx
+server {
+    listen 80;
+    server_name one-api.example.com;
+
+    location / {
+        proxy_pass http://127.0.0.1:3000;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_buffering off;
+        proxy_read_timeout 600s;
+    }
+}
+```
+
+编辑与启用：
+
+```bash
+sudoedit /etc/nginx/sites-available/one-api
+sudo ln -s /etc/nginx/sites-available/one-api /etc/nginx/sites-enabled/one-api
+sudo nginx -t
+sudo systemctl reload nginx
+```
+
+若链接已存在，先检查，勿重复覆盖。共享主机已有站点时保留其配置。`proxy_buffering off` 用于流式模型响应，读取超时按模型耗时调整，参数说明见 [Nginx 官方文档](https://nginx.org/en/docs/http/ngx_http_proxy_module.html)。
+
+公网域名须正确解析到服务器，证书验证所需的端口应可达。将示例域名和邮箱替换为真实值后申请证书：
+
+```bash
+sudo certbot --nginx -d one-api.example.com \
+  --email admin@example.com --agree-tos --redirect
+systemctl list-timers --all | grep certbot
+```
+
+确认已配置续期机制；证书管理及 Nginx 插件用法见 [Certbot 官方文档](https://eff-certbot.readthedocs.io/en/stable/using.html#nginx)。仅内网可达的服务不能直接照搬公网 HTTP 验证流程，应选用适用的 DNS 验证或企业证书。
+
+网站 HTTPS 证书供浏览器和模型客户端验证网站；`IPA_CA_CERT` 供应用验证 FreeIPA 的 LDAPS 服务，二者不能互换。部署后访问 `https://实际域名/login`，应用后台的服务器地址也填写对外 HTTPS 地址。
+
+## 10. 升级、迁移与常见问题
+
+### 10.1 更新应用
+
+由普通部署账号更新 FreeIPA 源码并按第 4 节重新构建。管理员先停止服务，备份当前运行数据库、配置和程序，再安装新程序：
 
 ```bash
 sudo systemctl stop one-api
+# 完成备份后安装新编译产物。
 sudo install -o root -g root -m 0755 "$ONE_API_DIR/one-api" /opt/one-api/one-api
 sudo systemctl start one-api
 sudo systemctl status one-api --no-pager
 ```
 
-运行目录与源码目录分开后，迁移电脑需要保存 `/etc/one-api`、`/var/lib/one-api`、必要日志与服务文件，不能仅复制克隆目录。权限问题可用 `namei -l /opt/one-api/.env` 查看目录和链接权限，并确认服务账号可读取配置及 CA、写入数据库和日志目录。
+升级程序不复制 .env.example 覆盖运行配置；只在 `/etc/one-api/.env` 中补充需要的参数。保留原会话密钥及数据库路径。启动时执行数据库结构补充，具体行为和恢复要求见[数据库升级说明](./database-freeipa-upgrade.md)。
 
-### 9.6 保留克隆目录：使用用户级 systemd 服务
+### 10.2 迁移到另一台电脑
 
-需要保留源码目录中的 `.env`、CA、数据库和日志时，可使用当前部署用户运行服务。本方式没有专用账号隔离，应用具有部署用户的文件访问权限；常驻服务器可采用前述专用账号方式。两种服务方式选择一种，切换时先停止另一种实例。
+停止应用后，保存以下内容：
 
-先完成构建，将 `ONE_API_DIR` 设置为克隆目录的绝对路径，并按 9.2 停止 PM2、备份数据库、删除 PM2 应用记录。然后安装项目提供的 [one-api-user.service](./deploy/systemd/one-api-user.service)：
+| 内容 | 需要保存的文件或目录 |
+| --- | --- |
+| 源码及项目记录 | 克隆目录及本地 docs 文档 |
+| 应用配置及 IPA CA | /etc/one-api |
+| SQLite 及旁文件 | /var/lib/one-api |
+| 必要日志 | /var/log/one-api |
+| 服务与网站配置 | /etc/systemd/system/one-api.service、对应 Nginx 站点 |
+| 网站证书及续期配置 | 对应 /etc/letsencrypt 内容及所用验证方式 |
 
-```bash
-mkdir -p "$HOME/.config/systemd/user" "$HOME/.config/one-api"
-chmod 700 "$HOME/.config/one-api"
-# 首次安装创建链接；若已存在，先核对其指向，不覆盖其他项目。
-ln -s "$ONE_API_DIR" "$HOME/.config/one-api/project"
-install -m 0644 "$ONE_API_DIR/deploy/systemd/one-api-user.service" \
-  "$HOME/.config/systemd/user/one-api.service"
-systemctl --user daemon-reload
-systemctl --user enable --now one-api
-systemctl --user status one-api --no-pager
-```
+可将外部运行资料的备份集中保存到项目目录中受保护、未提交 Git 的位置，再复制整个文件夹。真实密码、私钥和业务数据不提交 Git。仅复制源码目录不会包含实际运行数据库。
 
-服务使用 `$HOME/.config/one-api/project` 链接作为工作目录，直接读取项目 `.env`。保持原 `SQLITE_PATH`、`IPA_CA_CERT` 和 `PORT` 即可，相对路径依然相对于项目根目录。启动时清除继承的环境变量，避免用户管理器中的同名变量覆盖 `.env`。项目目录及数据库、日志须可由部署用户读写，`.env` 建议权限 600。启动链接和已安装的 unit 位于项目之外，其可重建的服务源文件保存在项目中。
+新电脑由部署账号重新准备构建工具，由管理员重建非登录服务账号、安装运行文件并恢复配置和数据。复制时不盲目沿用旧电脑的数字 UID/GID，恢复后按新电脑的 one-api 账号设置所有权。重建 systemd/Nginx/续期配置，核对域名、IPA 地址及端口后启动。
 
-要在退出登录后持续运行，并在开机时启动用户管理器，检查并启用 linger：
-
-```bash
-loginctl show-user "$USER" -p Linger
-# 输出 Linger=no 时，由管理员执行：
-sudo loginctl enable-linger "$USER"
-```
-
-若输出已为 `Linger=yes`，无需重复启用。未启用 linger 时，用户服务随用户管理器生命周期运行，不能保证退出登录后的常驻与开机启动。安装用户服务本身不需要 sudo。
-
-日常管理使用当前部署用户执行，不加 sudo：
-
-```bash
-systemctl --user start one-api
-systemctl --user stop one-api
-systemctl --user restart one-api
-systemctl --user status one-api --no-pager
-systemctl --user is-enabled one-api
-journalctl --user -u one-api -n 100 --no-pager
-journalctl --user -u one-api -f
-```
-
-修改项目 `.env` 后执行 `systemctl --user restart one-api`。更新可执行文件时先停止服务，替换项目根目录的 `one-api`，再启动。修改服务源文件后重新 install 到用户服务目录，执行 daemon-reload 后重启。移动克隆目录或换电脑时重建 project 链接、安装 unit、检查 linger，再启动；不要让 PM2 同时恢复该应用。
-
-systemd 参数依据 Ubuntu 24.04 自带的 `man systemd.service`、`man systemd.exec`，服务账号创建参数见 `man useradd`。
-
-## 10. 常见问题与迁移
+### 10.3 常见问题
 
 | 现象 | 检查方法 |
 | --- | --- |
-| 提示 `web/build/*` 没有匹配文件 | 先完成默认前端构建，再启动 Go 程序 |
-| IPA 登录一直等待或提示无法查询 | 检查 `getent hosts IPA域名`、网络路由、636/389 端口、目录服务及 bind 凭据；LDAP 建连有 5 秒超时 |
-| CA 文件不存在或证书验证失败 | 核对工作目录、`IPA_CA_CERT`、PEM 内容及证书域名；移动项目后检查路径 |
-| 登录后没有管理权限 | 检查应用角色组 DN、用户 `memberOf`、用户是否直接属于对应组，以及 uid 是否符合匹配条件 |
-| 列表出现本地 root | 检查 `.env` 的 `IPA_ONLY=true` 是否被外部环境覆盖，并重启 |
-| 修改匹配条件后人员减少 | 范围外历史 IPA 账号也会隐藏并失去使用资格，记录仍保留；管理员 uid 同样受规则约束 |
-| 重启后会话失效 | 检查是否配置固定 `SESSION_SECRET`；旧会话失效后重新登录 |
-| `database is locked` | 确认只有一个应用进程使用该 SQLite 文件，并使用已包含单连接池修复的本分支代码 |
+| 服务无法读取配置或 CA | 检查 /opt/one-api/.env 链接、/etc/one-api 权限和 IPA_CA_CERT；用 namei -l 检查路径 |
+| 服务无法写数据库 | 确认 SQLITE_PATH 指向 /var/lib/one-api，目录及文件归 one-api 所有 |
+| 找不到前端资源 | 先构建 web/build/default，再重新编译 Go 程序 |
+| IPA 查询失败或等待 | 检查域名解析、网络、636/389 端口、bind 凭据和 CA；LDAP 建连有 5 秒超时 |
+| 登录后没有管理权限 | 检查应用组 DN、直接组成员资格和 IPA_USER_MATCH |
+| 列表出现本地 root | 检查实际运行配置是否 IPA_ONLY=true 并重启 |
+| 修改配置不生效 | 编辑 /etc/one-api/.env，而非源码目录的准备文件，之后重启 |
+| 重启后会话失效 | 保留固定 SESSION_SECRET |
+| database is locked | 确认旧实例已停且只有一个应用进程使用该库 |
+| 找不到服务 | 本文使用系统服务，命令为 sudo systemctl，而非 systemctl --user |
 
-迁移到另一台电脑时，先停止服务，再复制项目目录，包括 `.env`、CA 文件、SQLite 数据库、日志和本地过程文档。相对路径配置可以随文件夹迁移；使用绝对路径时要调整。新电脑按本文重新准备 Go/Node 工具、构建并启动，并按作者方案重建 PM2 启动记录、Nginx 站点配置和证书续期配置。现有站点配置和续期步骤也应在项目内保存一份，网站私钥按敏感文件保存且不提交 Git。工具按新电脑的常规安装方式重新准备，不需要沿用原电脑的工具目录。将 `ONE_API_DIR` 更新为新电脑上的项目根目录，并重新设置 PM2 工作目录；Nginx 和 Certbot 默认配置及网站证书位于项目之外，迁移前须另外保存必要的配置和证书资料。
-
-`.env` 和 `.runtime/` 已在 Git 忽略规则中；内部 CA、业务数据库及备份也应保持本地保存。不要通过提交仓库传递真实密码。由原版升级到 FreeIPA 版本时，先阅读[数据库升级与回退说明](./database-freeipa-upgrade.md)。
+服务与账号参数依据 Ubuntu 24.04 自带的 `man systemd.service`、`man systemd.exec`、`man useradd`。本文命令用于管理员按步骤部署，修改文档不代表已在本机执行账号创建或服务切换。
