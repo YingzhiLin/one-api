@@ -66,20 +66,22 @@ _✨ 通过标准的 OpenAI API 格式访问所有的大模型，开箱即用 �
 > [!WARNING]
 > 非 IPA-only 模式下，使用本地 root 用户初次登录系统后，务必修改默认密码 `123456`！纯 IPA 模式不自动创建本地 root。
 
-## FreeIPA 企业账号接入
+## LDAP 企业目录账号接入（FreeIPA 兼容）
 
-说明更新日期：2026-10-04。FreeIPA 是原 One API 的新增功能，当前开发分支 `feature/ipa-account-system` 的改动将合并到 `FreeIPA` 分支，用户安装时克隆 `FreeIPA` 分支。合入原作者的 `main` 需经原作者同意。
+说明更新日期：2026-10-04。本分支为原 One API 增加 LDAP 目录认证、企业账号同步和组角色管理，已发布到 `FreeIPA` 分支，用户安装时克隆该分支。合入原作者的 `main` 需经原作者同意。
 
-本系统新增 FreeIPA 接入，面向使用 FreeIPA 管理员工账号的小公司，提供统一登录和本地额度、令牌管理：
+系统通过 LDAP 协议访问企业目录，支持 LDAPS 和 LDAP StartTLS；FreeIPA 是已验证的目录服务实例。使用其他 LDAP 目录时，须符合当前用户对象和属性约定：用户为 `posixAccount`，登录名为 `uid`，稳定身份标识为 `ipaUniqueID`，角色来自 `memberOf`，锁定状态读取 `nsAccountLock`。当前尚未提供自定义属性映射，不代表任意 LDAP 目录均可直接接入；详细要求见[部署说明](./deploy-freeipa.md#5-准备-ldap-目录服务freeipa-示例)。
 
-- 员工使用 FreeIPA 的登录名 `uid` 和密码登录。账号创建、密码修改及 IPA 账号解锁仍由 FreeIPA 负责。
+面向使用兼容 LDAP 目录管理员工账号的小公司，提供统一登录和本地额度、令牌管理。分支名 `FreeIPA`、配置前缀 `IPA_` 和数据库字段名保留原命名，用于配置及代码兼容：
+
+- 员工使用 LDAP 目录中的登录名 `uid` 和密码登录。账号创建、密码修改及目录账号解锁由目录服务负责；FreeIPA 用户在 FreeIPA 中操作。
 - 通过 `IPA_ADMIN_GROUP_DN`、`IPA_ROOT_GROUP_DN` 指定本系统管理员和超级管理员组，管理员资格由 IPA 组成员身份决定。
 - 后台同步目录账号；管理员可以查看匹配范围内的员工账号，进行充值、额度管理和本地启用/禁用。任意一侧禁用账号，账号都不能使用本系统。
 - `REGISTER_ENABLED=false` 关闭公开注册；`IPA_ONLY=true` 限制为 IPA 登录和 IPA 账号来源，并在用户列表及搜索中排除本地账号，包括历史本地 root。
 - `IPA_USER_MATCH=h*` 只匹配 h 开头的 IPA 登录账号；`*` 匹配全部账号。绑定服务账号始终被排除，不能作为应用用户登录。
 - 支持 LDAPS 或 LDAP StartTLS，并通过 `IPA_CA_CERT` 指定内部 CA 证书。用户列表按真实总数分页，翻页不再触发全目录同步。
 
-**新增 FreeIPA 功能当前仅通过了克隆源码安装方式的验证**：Ubuntu 24.04、默认前端主题、本机 Go 进程、SQLite 和 FreeIPA 接入。其他安装方式（Docker、Docker Compose、上游预编译发行包、宝塔面板等）尚未完成新增功能的验证；使用镜像或发行包时须确认其包含 FreeIPA 更新。
+**新增 LDAP/FreeIPA 功能当前仅通过了克隆源码安装方式的验证**：Ubuntu 24.04、默认前端主题、本机 Go 进程、SQLite 和 FreeIPA 目录接入。其他 LDAP 目录的完整兼容性尚未验证；其他安装方式（Docker、Docker Compose、上游预编译发行包、宝塔面板等）也尚未完成新增功能的验证，使用镜像或发行包时须确认其包含本分支更新。
 
 FreeIPA 分支的 [Ubuntu 24.04 克隆安装说明](./deploy-freeipa.md)采用普通部署账号构建、非登录服务账号 `one-api` 运行的方案，明确 nvm/Node.js、Go 构建、服务账号、文件权限及运行配置的职责。systemd 直接管理应用，Nginx 与 Certbot 提供网站 HTTPS。专用非登录账号方案及 Nginx/Certbot 组合尚未在本机完成部署验证；`FreeIPA` 分支已发布，可克隆获取新增功能。
 
@@ -438,7 +440,7 @@ graph LR
 29. `ENFORCE_INCLUDE_USAGE`：是否强制在 stream 模型下返回 usage，默认不开启，可选值为 `true` 和 `false`。
 30. `TEST_PROMPT`：测试模型时的用户 prompt，默认为 `Print your model name exactly and do not output without any other text.`。
 
-### FreeIPA 扩展配置
+### LDAP / FreeIPA 扩展配置
 
 原项目环境变量沿用上述说明。新增的 IPA 连接、账号筛选、组角色、CA、注册限制参数见 [deploy-freeipa.md](./deploy-freeipa.md#6-放置-ca-并配置-env)。纯 IPA 模式不会创建本地 root，`INITIAL_ROOT_TOKEN`、`INITIAL_ROOT_ACCESS_TOKEN` 不用于 IPA 管理员初始化。
 

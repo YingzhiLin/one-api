@@ -1,10 +1,12 @@
-# Ubuntu 24.04：以非登录账号部署 FreeIPA 版 One API
+# Ubuntu 24.04：以非登录账号部署 LDAP / FreeIPA 版 One API
 
 更新日期：2026-10-04。安装入口为已发布的 `FreeIPA` 分支，分支名称区分大小写。
 
 ## 1. 部署方式与账号职责
 
-本项目在原 One API 上增加 FreeIPA 账号接入。本文采用 **普通部署账号构建 → 管理员安装 → 非登录账号运行** 的流程：systemd 直接运行编译后的 Go 程序，Nginx 提供反向代理，Certbot 管理网站 HTTPS 证书。
+本项目在原 One API 上增加 LDAP 目录账号接入，包括目录认证、用户同步和组角色管理。FreeIPA 是已验证的目录服务实例；其他 LDAP 目录须符合第 5 节的对象及属性约定。本文采用 **普通部署账号构建 → 管理员安装 → 非登录账号运行** 的流程：systemd 直接运行编译后的 Go 程序，Nginx 提供反向代理，Certbot 管理网站 HTTPS 证书。
+
+为保持配置和数据兼容，安装分支仍名为 `FreeIPA`，环境变量保留 `IPA_` 前缀，文档文件名仍为 `deploy-freeipa.md`。这些名称不改变实际使用的 LDAP 协议，也不表示其他目录无需适配就能直接使用。
 
 **FreeIPA 功能目前仅通过克隆源码安装方式的验证。** 已使用的环境为 Ubuntu 24.04 x86_64、Go 1.27.1、Node.js 26.9.0、npm 11.19.1，默认主题和 SQLite。PM2 及用户级 systemd 曾用于本机运行；本文的专用非登录账号方案尚未在本机实际部署。Docker、Docker Compose、上游预编译包、其他主题及 Nginx/Certbot 组合的完整安装流程尚未验证。
 
@@ -15,8 +17,8 @@
 | 普通部署账号 | 登录服务器、克隆源码、安装 nvm/Node.js、构建前端、编译 Go、准备安装文件、执行升级 | 使用自己的用户目录与构建环境；不以 root 执行 npm |
 | 系统管理员 | 安装系统软件、创建服务账号、安装程序和配置、设置权限、维护 systemd/Nginx/Certbot | 可由部署账号通过 sudo 执行，也可由另一名管理员执行 |
 | 非登录服务账号 `one-api` | 执行应用、读取配置和 CA、写数据库及日志 | 无交互登录、无 sudo、无登录密码；不安装 nvm、Node.js、Go 或 PM2 |
-| FreeIPA 应用用户 | 登录网页、调用模型及按应用角色管理额度 | 与上述 Linux 账号职责独立 |
-| LDAP bind 账号 | 在 FreeIPA 中供应用查询目录 | 不是 Linux 服务账号，也不是员工登录账号 |
+| LDAP 目录应用用户 | 登录网页、调用模型及按应用角色管理额度 | 与上述 Linux 账号职责独立；FreeIPA 员工账号属于此类 |
+| LDAP bind 账号 | 供应用查询 LDAP 目录中的用户与组属性 | 不是 Linux 服务账号，也不是员工登录账号 |
 
 nvm 安装在**普通部署账号**的环境中，通常为 `~/.nvm`；所有 npm 和构建命令由该账号执行。若 Go 安装在 `/usr/local/go`，由管理员安装，部署账号使用它编译。服务启动时无需加载 nvm 或部署账号的 Shell 配置。
 
@@ -87,14 +89,14 @@ node --version
 npm --version
 ```
 
-不需要为 FreeIPA 接入安装 ldapsearch 或 Python；目录访问由 Go 程序中的 LDAP 库完成。
+不需要为 LDAP / FreeIPA 接入安装 ldapsearch 或 Python；目录查询和用户密码认证由 Go 程序中的 LDAP 库完成。
 
 ## 3. 克隆 FreeIPA 分支
 
-以下由普通部署账号执行。先设置源码目录的绝对路径，路径可自行选择；包含空格时保留双引号：
+以下由普通部署账号执行。先设置源码目录的绝对路径，路径可自行选择，必须使用绝对路径，下例中使用 `/home/lynnet/download/one-api`；包含空格时保留双引号：
 
 ```bash
-export ONE_API_DIR='/你选择的目录/one-api'
+export ONE_API_DIR='/home/lynnet/download/one-api/one-api'
 mkdir -p "$(dirname "$ONE_API_DIR")"
 ONE_API_REPOSITORY='https://github.com/YingzhiLin/one-api.git'
 git ls-remote --heads "$ONE_API_REPOSITORY" FreeIPA
@@ -109,6 +111,22 @@ git branch --show-current
 ## 4. 构建前端和 Go 程序
 
 全部构建命令由普通部署账号执行。后端编译会嵌入前端资源，因此先构建默认主题：
+
+默认前端的 `react-scripts@5.0.1` 与 i18next 24 的可选 TypeScript 依赖范围冲突。项目在 `web/default/.npmrc` 设置 `legacy-peer-deps=true`，让该目录的 npm 安装绕过 peerDependencies 检查；这是当前 JavaScript 前端的安装兼容处理，并未消除上游依赖冲突。行为见 [npm 官方说明](https://docs.npmjs.com/cli/v11/using-npm/config/#legacy-peer-deps)。旧克隆尚未包含该文件时，可使用 `npm install --legacy-peer-deps`，无需设置用户全局选项或使用 `--force`。
+
+
+如果你需要使用go和npm的代理，推荐如下：
+
+```bash
+# Use the aliyun proxy if you need.
+export GOPROXY=https://mirrors.aliyun.com/goproxy/
+
+# use taobao proxy if you need.
+# If you haven't nrm, please install it with sudo
+# sudo npm install -g nrm
+nrm use taobao
+```
+Next.
 
 ```bash
 cd "$ONE_API_DIR/web/default"
@@ -135,23 +153,50 @@ CGO_ENABLED=1 go build -trimpath -o one-api .
 
 编译完成后，只安装可执行文件、运行配置和所需证书。前端源码更新后，需重新构建前端并编译 Go 程序。
 
-## 5. 准备 FreeIPA
+若出现 `Unknown user config "home"`，这是当前用户 npm 配置中的无效选项，与 ERESOLVE 依赖冲突分别处理。在执行构建的普通部署账号下移除该选项：
+
+```bash
+npm config delete home --location=user
+```
+
+日志若位于 `/root/.npm/`，应核对是否在 root 终端执行构建。按本文切换到普通部署账号并加载其 nvm 环境；不要通过 sudo npm 安装依赖。nvm 环境中的可选 npm 全局工具也由该账号安装，不使用 sudo。已失败的安装可以在 `web/default` 中重试，无需先删除整个源码目录或修改运行配置。
+
+## 5. 准备 LDAP 目录服务（FreeIPA 示例）
+
+### 5.1 LDAP 接入方式与兼容要求
+
+应用先用专用 bind 账号查询用户 DN，再以该用户 DN 和登录密码执行 LDAP bind 认证。连接须使用 LDAPS，或在 LDAP 连接上启用 StartTLS；不接受明文 LDAP 认证。账号和密码管理仍由目录服务负责。
+
+当前 LDAP 属性约定如下，配置只能调整连接地址、查询范围、uid 匹配条件和角色组 DN，尚不能自定义对象类或属性映射：
+
+| 目录对象或属性 | 当前代码的要求 |
+| --- | --- |
+| `objectClass=posixAccount` | 用户搜索使用固定对象类过滤条件 |
+| `uid` | 用户登录名；单用户查询结果须唯一 |
+| `ipaUniqueID` | 必须存在且非空，用作稳定身份标识；不会自动改用 entryUUID 或其他属性 |
+| `memberOf` | 用户条目中的组 DN 列表，与管理员及超级管理员组 DN 比较 |
+| `nsAccountLock` | 值为 true 时判定目录账号锁定；不自动映射其他目录的禁用字段 |
+| `displayName`、`cn`、`mail` | 显示名和邮件信息；显示名依次回退至 cn、uid |
+
+其他 LDAP 目录可在满足这些要求时按相同流程配置。缺少稳定 ID、使用不同用户对象类、组成员模型或锁定字段时，需要先做兼容适配，不能仅替换 URL 就视为完成接入。当前完整验证的目录服务仍为 FreeIPA。
+
+### 5.2 目录连接资料与角色准备
 
 在启动前准备以下资料：
 
 | 资料 | 用途 |
 | --- | --- |
-| 可解析的 IPA 域名及 LDAP 服务端口 | 连接目录，域名需与服务证书匹配 |
+| 可解析的 LDAP 服务域名及端口 | 连接目录，域名需与服务证书匹配 |
 | Base DN 和用户目录 DN | 限定查询范围 |
 | 专用 LDAP bind DN 与密码 | 查询用户属性及组成员身份 |
 | 管理员、超级管理员组 DN | 授予 One API 的管理角色 |
-| IPA CA 证书或 CA 证书链 | 验证内部证书 |
+| LDAP 服务的 CA 证书或 CA 证书链 | 验证目录服务的内部证书；FreeIPA 示例使用 IPA CA |
 
 绑定账号需要能读取匹配用户的 `uid`、`cn`/`displayName`、`mail`、`ipaUniqueID`、`memberOf` 和 `nsAccountLock` 等属性。本系统不需要通过该账号修改 IPA 密码或账号。
 
 应用角色组可使用 FreeIPA 非 POSIX 组，例如 `one-api-admins` 和 `one-api-roots`。代码依据用户 `memberOf` 中的组 DN 判断角色；首次安装先准备至少一个直接属于应用超级管理员组的员工账号，并确保其 uid 匹配 `IPA_USER_MATCH`。不要依赖 IPA 的 `admin` 用户名自动取得本系统管理员资格。
 
-管理员通过 FreeIPA Web UI 维护用户、密码、组成员和 IPA 锁定状态。本系统的本地“启用/禁用”仅控制应用使用资格；IPA 与本地任一侧禁用都不可用。
+管理员通过所用 LDAP 目录的管理工具维护用户、密码、组成员和锁定状态；FreeIPA 示例使用 FreeIPA Web UI。本系统的本地“启用/禁用”仅控制应用使用资格；目录锁定状态必须满足上述属性约定，目录与本地任一侧禁用都不可用。
 
 ## 6. 放置 CA 并配置 .env
 
@@ -170,37 +215,66 @@ chmod 600 .env
 以下是新安装的 SQLite + 纯 IPA 模式配置示例。域名、DN、密码和会话密钥均需替换为自己的值。端口 3000 仅为示例，实际以 `.env` 的 `PORT` 为准，后面的访问地址和 Nginx 上游端口应同步调整。已有安装应保留原数据库与会话密钥，在原 `.env` 中增加 IPA 配置，升级前先阅读[数据库升级说明](./database-freeipa-upgrade.md)：
 
 ```dotenv
+# 基础运行
+# 网页、管理 API 和模型 API 共用的监听端口；服务监听所有网卡。
 PORT=3000
+# 是否启用调试模式；默认 false。
 DEBUG=false
+# 前端主题；默认 default，仅构建默认主题时使用 default。
 THEME=default
 
-# 不需要出站 HTTP 代理时留空。
+# 代理与会话
+# 支持环境代理的出站 HTTP/HTTPS 请求使用的代理；不用于监听、网站 HTTPS 或 LDAP，不需要时留空。
 HTTPS_PROXY=
-
-# 固定密钥让正常重启后的会话保持可验证。
+# 固定会话签名密钥；保留原值可避免正常重启后会话失效，不使用示例占位符。
 SESSION_SECRET=REPLACE_WITH_RANDOM_SESSION_SECRET
 
-# SQLite 使用服务账号的数据目录；本示例不启用 Redis。
+# 数据库与缓存
+# 数据库连接字符串；留空使用 SQLite，已有 MySQL/PostgreSQL 安装保留原配置。
 SQL_DSN=
+# SQLite 文件路径；相对路径按应用工作目录解析，父目录须存在，迁移时确保继续使用原业务数据。
 SQLITE_PATH=/var/lib/one-api/one-api.db
+# Redis 连接字符串；不使用 Redis 时留空，已有安装保留原配置。
 REDIS_CONN_STRING=
 
+# 账号模式与注册
+# false 禁止公开密码注册和首次 OAuth 账号创建；不影响已有账号登录或 IPA 同步，IPA_ONLY=true 时也禁止公开注册。
 REGISTER_ENABLED=false
+# 是否启用 IPA 登录；默认 false，IPA_ONLY=true 时强制启用；启用后管理接口要求 IPA 身份及应用角色组资格。
 IPA_ENABLED=true
+# true 仅允许 IPA 身份登录和使用，排除本地账号并禁止非 IPA 账号创建；空数据库不创建本地 root。
 IPA_ONLY=true
-IPA_URL=ldaps://ipa.example.com:636
-IPA_STARTTLS=false
-IPA_BASE_DN=dc=example,dc=com
-IPA_USER_BASE_DN=cn=users,cn=accounts,dc=example,dc=com
 
-# h* 只允许 h 开头的 IPA uid；* 匹配全部。
+# LDAP 连接与查询
+# LDAP 服务地址；推荐 ldaps://域名:636，域名须与证书匹配，ldap://域名:389 须同时启用 StartTLS。
+IPA_URL=ldaps://ipa.example.com:636
+# 是否在 LDAP 连接上启用 StartTLS；默认 false，使用 ldap:// 地址时设为 true。
+IPA_STARTTLS=false
+# IPA 目录的 Base DN，用于限定查询范围。
+IPA_BASE_DN=dc=example,dc=com
+# 用户查询范围；未设置或留空时使用 IPA_BASE_DN。
+IPA_USER_BASE_DN=cn=users,cn=accounts,dc=example,dc=com
+# 按 IPA 登录名 uid 匹配，忽略大小写；仅 * 是通配符，h* 匹配 h 开头，空值按 *；管理员也须匹配，绑定服务账号始终排除。
 IPA_USER_MATCH=h*
+
+# LDAP 查询凭据
+# 专用只读目录查询账号的 DN；应有读取用户与组属性的权限，不能作为应用用户登录。
+IPA_BIND_DN=uid=app_bind_oneapi,cn=users,cn=accounts,dc=example,dc=com
+# 目录查询账号的密码；保存在受保护的 .env 中，不放入服务文件、命令参数或版本库。
+IPA_BIND_PASSWORD="REPLACE_WITH_REAL_BIND_PASSWORD"
+
+# 应用管理角色
+# 应用管理员组的 DN；按 IPA 组成员资格授予管理权限，管理员访问时会核验 IPA 身份及成员资格。
 IPA_ADMIN_GROUP_DN=cn=one-api-admins,cn=groups,cn=accounts,dc=example,dc=com
+# 应用超级管理员组的 DN；未设置或留空时不通过该组授予超级管理员。
 IPA_ROOT_GROUP_DN=cn=one-api-roots,cn=groups,cn=accounts,dc=example,dc=com
 
-IPA_BIND_DN=uid=app_bind_oneapi,cn=users,cn=accounts,dc=example,dc=com
-IPA_BIND_PASSWORD="REPLACE_WITH_REAL_BIND_PASSWORD"
+# CA 信任与挂载
+# 用于验证 LDAP TLS 证书的 PEM CA 文件或证书链路径；相对路径按应用工作目录解析，空值使用系统信任库。
 IPA_CA_CERT=/etc/one-api/cert/ca.crt
+
+# 目录同步
+# IPA 目录同步间隔，单位秒，默认 300；启动时也同步，用户列表翻页只读取本地数据。
 IPA_SYNC_FREQUENCY=300
 ```
 
@@ -208,21 +282,31 @@ IPA_SYNC_FREQUENCY=300
 
 | 配置 | 说明 |
 | --- | --- |
-| `PORT` | 网页、管理 API 和模型 API 共用的端口；服务监听所有网卡 |
-| `REGISTER_ENABLED` | `false` 关闭公开注册；纯 IPA 模式还会禁止非 IPA 账号创建 |
-| `IPA_ENABLED` | 默认 `false`；启用 IPA 登录。`IPA_ONLY=true` 时也会强制启用 IPA |
-| `IPA_URL` | LDAP 连接地址；推荐 `ldaps://域名:636`，域名须与证书匹配 |
-| `IPA_BASE_DN` | IPA 目录的 Base DN，例如 `dc=example,dc=com` |
-| `IPA_USER_BASE_DN` | 用户查询范围；未设置时使用 `IPA_BASE_DN` |
-| `IPA_BIND_PASSWORD` | 专用查询账号密码，保存在 `.env`，不要放入服务文件、命令参数或版本库 |
-| `IPA_STARTTLS` | 默认 `false`；使用 `ldap://域名:389` 时设置为 `true` |
-| `IPA_ONLY` | `true` 只允许 IPA 身份；列表和搜索过滤本地 root 等本地账号，空数据库也不创建本地 root |
-| `IPA_USER_MATCH` | 按登录名 uid 匹配，忽略大小写；只有 `*` 为通配符，空值按 `*`；管理员也必须匹配 |
-| `IPA_BIND_DN` | 专用查询账号；该账号始终从应用账号中排除，即使配置匹配 `*` |
-| `IPA_ADMIN_GROUP_DN` | 应用管理员组；管理员访问时会向 IPA 核验身份和成员资格 |
-| `IPA_ROOT_GROUP_DN` | 应用超级管理员组；未配置时不会通过该组授予超级管理员 |
-| `IPA_CA_CERT` | PEM CA 文件路径；空值使用系统信任库，内部 CA 应明确提供 |
-| `IPA_SYNC_FREQUENCY` | 目录同步间隔，单位秒；启动时也会同步，列表翻页只读取本地数据 |
+| `PORT` | 网页、管理 API 和模型 API 共用的监听端口；服务监听所有网卡。 |
+| `DEBUG` | 是否启用调试模式；默认 false。 |
+| `THEME` | 前端主题；默认 default，仅构建默认主题时使用 default。 |
+| `HTTPS_PROXY` | 支持环境代理的出站 HTTP/HTTPS 请求使用的代理；不用于监听、网站 HTTPS 或 LDAP，不需要时留空。 |
+| `SESSION_SECRET` | 固定会话签名密钥；保留原值可避免正常重启后会话失效，不使用示例占位符。 |
+| `SQL_DSN` | 数据库连接字符串；留空使用 SQLite，已有 MySQL/PostgreSQL 安装保留原配置。 |
+| `SQLITE_PATH` | SQLite 文件路径；相对路径按应用工作目录解析，父目录须存在，迁移时确保继续使用原业务数据。 |
+| `REDIS_CONN_STRING` | Redis 连接字符串；不使用 Redis 时留空，已有安装保留原配置。 |
+| `REGISTER_ENABLED` | false 禁止公开密码注册和首次 OAuth 账号创建；不影响已有账号登录或 IPA 同步，IPA_ONLY=true 时也禁止公开注册。 |
+| `IPA_ENABLED` | 是否启用 IPA 登录；默认 false，IPA_ONLY=true 时强制启用；启用后管理接口要求 IPA 身份及应用角色组资格。 |
+| `IPA_ONLY` | true 仅允许 IPA 身份登录和使用，排除本地账号并禁止非 IPA 账号创建；空数据库不创建本地 root。 |
+| `IPA_URL` | LDAP 服务地址；推荐 ldaps://域名:636，域名须与证书匹配，ldap://域名:389 须同时启用 StartTLS。 |
+| `IPA_STARTTLS` | 是否在 LDAP 连接上启用 StartTLS；默认 false，使用 ldap:// 地址时设为 true。 |
+| `IPA_BASE_DN` | IPA 目录的 Base DN，用于限定查询范围。 |
+| `IPA_USER_BASE_DN` | 用户查询范围；未设置或留空时使用 IPA_BASE_DN。 |
+| `IPA_USER_MATCH` | 按 IPA 登录名 uid 匹配，忽略大小写；仅 * 是通配符，h* 匹配 h 开头，空值按 *；管理员也须匹配，绑定服务账号始终排除。 |
+| `IPA_BIND_DN` | 专用只读目录查询账号的 DN；应有读取用户与组属性的权限，不能作为应用用户登录。 |
+| `IPA_BIND_PASSWORD` | 目录查询账号的密码；保存在受保护的 .env 中，不放入服务文件、命令参数或版本库。 |
+| `IPA_ADMIN_GROUP_DN` | 应用管理员组的 DN；按 IPA 组成员资格授予管理权限，管理员访问时会核验 IPA 身份及成员资格。 |
+| `IPA_ROOT_GROUP_DN` | 应用超级管理员组的 DN；未设置或留空时不通过该组授予超级管理员。 |
+| `IPA_CA_CERT` | 用于验证 LDAP TLS 证书的 PEM CA 文件或证书链路径；相对路径按应用工作目录解析，空值使用系统信任库。 |
+| `IPA_CA_CERT_HOST_DIR` | 仅供 Docker Compose 使用的宿主机 CA 目录，挂载到容器 /run/one-api/certs；IPA_CA_CERT 须指定容器内证书路径，源码部署无需此项。 |
+| `IPA_SYNC_FREQUENCY` | IPA 目录同步间隔，单位秒，默认 300；启动时也同步，用户列表翻页只读取本地数据。 |
+
+三处配置按相同字段顺序和解释整理，但保留各自已有字段与值。上表也列出模板或示例中的可选字段；未出现在某份配置中的字段没有自动补入。Docker Compose 专用的 IPA_CA_CERT_HOST_DIR 不用于本文的源码部署。
 
 ### 账号模式与已有账号
 
@@ -239,7 +323,10 @@ IPA_SYNC_FREQUENCY=300
 迁移原数据库时，可以允许旧本地账号登录，同时禁止新用户自行注册，无需启用纯 IPA 模式：
 
 ```dotenv
+# 账号模式与注册
+# false 禁止公开密码注册和首次 OAuth 账号创建；不影响已有账号登录或 IPA 同步，IPA_ONLY=true 时也禁止公开注册。
 REGISTER_ENABLED=false
+# true 仅允许 IPA 身份登录和使用，排除本地账号并禁止非 IPA 账号创建；空数据库不创建本地 root。
 IPA_ONLY=false
 ```
 
@@ -248,17 +335,6 @@ IPA_ONLY=false
 运行配置保存在 `/etc/one-api/.env`，通过 `sudoedit /etc/one-api/.env` 修改，然后执行 `sudo systemctl restart one-api`。修改源码目录中的准备文件不会自动更新已安装的配置。恢复公开注册时将 `REGISTER_ENABLED=true`，还需确保后台注册开关已开启；它不是强制打开注册的开关。
 
 **启用 IPA 会改变管理资格。** 当前实现中，即使 `IPA_ONLY=false`，旧本地 `admin/root` 也不能凭原有角色访问管理接口。切换前应先准备符合 `IPA_USER_MATCH` 且直接属于 `IPA_ROOT_GROUP_DN` 指定组的 IPA 用户，避免切换后没有可用的应用超级管理员。账号同名不会自动合并，已有安装的身份关联与数据保留要求见[数据库升级说明](./database-freeipa-upgrade.md)。
-
-下列原项目参数继续沿用，用于说明上述示例和迁移时的路径关系：
-
-| 配置 | 本示例中的用法 |
-| --- | --- |
-| `SQL_DSN` | 留空使用 SQLite；已有 MySQL/PostgreSQL 安装保留原配置 |
-| `SQLITE_PATH` | 默认 `one-api.db`；本文明确使用 `/var/lib/one-api/one-api.db`。迁移时先复制原数据库，再设置目标路径；不要指向空文件而丢失旧账号数据 |
-| `SESSION_SECRET` | 保留固定密钥，避免正常重启后会话失效 |
-| `THEME` | 本分支验证使用 `default` |
-| `REDIS_CONN_STRING` | 本示例留空；已有 Redis 配置继续沿用 |
-| `HTTPS_PROXY` | 出站 HTTP/HTTPS 代理，不用于网站 HTTPS 或 IPA 目录连接 |
 
 其他原项目环境变量见 [README 环境变量说明](./README.md#环境变量)，无需因 FreeIPA 接入重新设置。
 
@@ -351,8 +427,14 @@ sudoedit /etc/one-api/.env
 保留实际 `PORT`、会话密钥、目录连接及账号模式。SQLite 的 `SQL_DSN` 留空，路径明确设置为：
 
 ```dotenv
+# 数据库与缓存
+# 数据库连接字符串；留空使用 SQLite，已有 MySQL/PostgreSQL 安装保留原配置。
 SQL_DSN=
+# SQLite 文件路径；相对路径按应用工作目录解析，父目录须存在，迁移时确保继续使用原业务数据。
 SQLITE_PATH=/var/lib/one-api/one-api.db
+
+# CA 信任与挂载
+# 用于验证 LDAP TLS 证书的 PEM CA 文件或证书链路径；相对路径按应用工作目录解析，空值使用系统信任库。
 IPA_CA_CERT=/etc/one-api/cert/ca.crt
 ```
 

@@ -1,12 +1,12 @@
-# FreeIPA 数据库变更、升级与回退
+# LDAP / FreeIPA 数据库变更、升级与回退
 
 更新日期：2026-10-04。
 
-本文说明原 One API 数据库升级到包含 FreeIPA 功能的版本时的变化。安装入口为 `FreeIPA` 分支，操作方式见 [deploy-freeipa.md](./deploy-freeipa.md)。
+本文说明原 One API 数据库升级到包含 LDAP 目录账号接入功能的版本时的变化。FreeIPA 是已验证的目录服务实例，其他 LDAP 目录须符合当前对象及属性约定；要求见 [deploy-freeipa.md](./deploy-freeipa.md#5-准备-ldap-目录服务freeipa-示例)。安装入口仍为 `FreeIPA` 分支，数据库字段保留 `ipa_` 命名。
 
 ## 1. 对比范围
 
-本次对比基于本地 `main` 提交 `8df4a2670b98266bd287c698243fff327d9748cf`（2025-02-21）与当前 FreeIPA 开发工作区；本地 `origin/main` 指向同一提交。结论不代表原作者仓库在此提交之后的所有更新。当前开发改动仍需合并发布到 `FreeIPA` 分支。
+本次对比基于本地 `main` 提交 `8df4a2670b98266bd287c698243fff327d9748cf`（2025-02-21）与包含 LDAP / FreeIPA 更新的版本；结论不代表原作者仓库在此提交之后的所有更新。安装分支 `FreeIPA` 已于 2026-10-04 发布。
 
 ## 2. 数据库结构变化
 
@@ -16,9 +16,9 @@
 
 | 字段 | 模型类型 | 用途 | 索引与约束 |
 | --- | --- | --- | --- |
-| `ipa_entry_uuid` | string | 保存 FreeIPA 的稳定身份标识，通常来自 `ipaUniqueID`；同步时据此识别同一员工 | 普通索引，没有唯一约束 |
-| `ipa_uid` | string | 保存 FreeIPA 登录名，用于认证、搜索和匹配条件 | 普通索引，没有唯一约束 |
-| `ipa_account_locked` | bool | 保存 FreeIPA 账号锁定状态 | 没有新增索引 |
+| `ipa_entry_uuid` | string | 保存 LDAP 目录的稳定身份标识，当前固定读取 `ipaUniqueID`；同步时据此识别同一员工 | 普通索引，没有唯一约束 |
+| `ipa_uid` | string | 保存 LDAP 目录登录名 uid，用于认证、搜索和匹配条件 | 普通索引，没有唯一约束 |
+| `ipa_account_locked` | bool | 保存 LDAP 目录账号锁定状态，当前读取 `nsAccountLock` | 没有新增索引 |
 
 本机 SQLite 的前两个字段为 `text`，锁定字段为 `numeric`；其他数据库的物理类型由 GORM 与对应驱动生成。这三个字段没有显式 `NOT NULL` 或数据库默认值，旧记录新增字段可能为 NULL；代码读取时按空字符串或 false 处理，列表查询对字符串使用 `COALESCE`。
 
@@ -70,4 +70,3 @@ GORM 自动迁移会补齐缺少的结构，保留不再使用的字段；涉及
 当前建议的可靠回退方式是：停止新版全部应用进程，保留升级后数据库的独立副本，再成套恢复升级前数据库、配置、旧可执行文件和运行方式。SQLite 恢复时也要处理新版遗留的 WAL/SHM/journal 文件，避免将不同快照混用；MySQL/PostgreSQL 从完整备份恢复。
 
 回退到升级前备份会丢失升级后新增的充值、用量和账号变更，因此切换前应安排维护窗口和回退决策时间。不要只换回原版程序并继续使用已经同步了 IPA 账号的数据库：原版不了解 IPA 身份、锁定状态与组角色，无法保证相同的访问控制。
-
