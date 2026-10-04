@@ -584,7 +584,51 @@ sudo systemctl status one-api --no-pager
 
 升级程序不复制 .env.example 覆盖运行配置；只在 `/etc/one-api/.env` 中补充需要的参数。保留原会话密钥及数据库路径。启动时执行数据库结构补充，具体行为和恢复要求见[数据库升级说明](./database-freeipa-upgrade.md)。
 
-### 10.2 迁移到另一台电脑
+### 10.2 备份运行中的应用
+
+采用 SQLite 时，推荐短暂停止应用后备份配置、数据库、程序和服务文件，再立即启动。确认其他进程也不写入该数据库，不能在持续写入期间直接复制 `.db` 文件并视为完整备份。
+
+以下适用于本文的系统级服务与标准目录，由普通部署账号在 Bash 中执行；`ONE_API_DIR` 指向源码目录。命令会短暂停机，备份保存在项目 `.runtime/backups/` 中，便于随项目复制。先确认磁盘空间，并选择适当的维护时段。
+
+```bash
+(
+  set -e
+  umask 077
+  sudo -v
+  mkdir -p "$ONE_API_DIR/.runtime/backups"
+  ONE_API_BACKUP_DIR="$(mktemp -d "$ONE_API_DIR/.runtime/backups/$(date +%F_%H%M%S)-XXXXXX")"
+  sudo systemctl is-active --quiet one-api
+  sudo systemctl stop one-api
+  # 备份命令失败时也尝试恢复原来运行的服务。
+  trap 'sudo systemctl start one-api' EXIT
+  sudo tar -czf "$ONE_API_BACKUP_DIR/runtime.tar.gz" -C / \
+    opt/one-api etc/one-api var/lib/one-api var/log/one-api \
+    etc/systemd/system/one-api.service
+  sudo chown "$(id -u):$(id -g)" "$ONE_API_BACKUP_DIR/runtime.tar.gz"
+  chmod 600 "$ONE_API_BACKUP_DIR/runtime.tar.gz"
+  sudo systemctl start one-api
+  trap - EXIT
+  # 源码、Git 历史、未提交配置与本地讨论记录另存；排除备份本身与构建依赖。
+  tar --exclude='./.runtime' --exclude='./logs' \
+    --exclude='./web/default/node_modules' --exclude='./web/air/node_modules' \
+    --exclude='./web/berry/node_modules' \
+    -czf "$ONE_API_BACKUP_DIR/source.tar.gz" -C "$ONE_API_DIR" .
+  (cd "$ONE_API_BACKUP_DIR" && sha256sum runtime.tar.gz source.tar.gz > SHA256SUMS)
+  printf '备份目录：%s\n' "$ONE_API_BACKUP_DIR"
+)
+```
+
+备份完成后用 `sudo systemctl status one-api --no-pager` 确认已恢复运行；失败时检查错误，不能把未完整生成的压缩包当作成功备份。保存打印的目录和 `SHA256SUMS`，复制到另一台设备后可在该目录执行 `sha256sum -c SHA256SUMS` 检查传输完整性；校验和不等同于恢复验证。
+
+若配置了其他数据路径，应调整归档路径。运行包含真实密码、会话密钥和业务数据，权限保持 600，存放目录保持 700，并另存到受保护的其他设备；只保存在同一磁盘不能防止磁盘故障。Nginx 站点和 `/etc/letsencrypt/` 中使用的证书、续期配置需另行备份；它们可能被其他网站共享，不盲目覆盖恢复。
+
+恢复时先停止应用，将运行文件恢复到对应目录，再按第 7 节设置程序、配置、CA、数据库与日志权限，执行 daemon-reload 并启动；换电脑时先创建服务账号，不能盲目保留原电脑数字 UID/GID。应保留与数据库备份对应的程序版本，避免直接降级程序后读取升级过的数据库。
+
+**若使用此前的用户级服务**，停止和启动使用 `systemctl --user stop/start one-api`，数据库位置取实际项目 `.env` 中的 `SQLITE_PATH`，同时备份项目目录、用户服务 unit 及项目链接说明，不能照搬上述 `/var/lib/one-api` 路径。
+
+MySQL/PostgreSQL 应使用其数据库备份工具；文件归档不能备份远端数据库。必须不停机时，SQLite 可使用在线 Backup API 或相应的 `.backup` 工具形成一致快照，再归档快照与配置，不直接复制正在写入的文件。方法见 [SQLite 官方备份说明](https://www.sqlite.org/backup.html)。LDAP 目录本身也需由目录管理员另外备份，本应用备份不能替代目录备份。
+
+### 10.3 迁移到另一台电脑
 
 停止应用后，保存以下内容：
 
@@ -601,7 +645,7 @@ sudo systemctl status one-api --no-pager
 
 新电脑由部署账号重新准备构建工具，由管理员重建非登录服务账号、安装运行文件并恢复配置和数据。复制时不盲目沿用旧电脑的数字 UID/GID，恢复后按新电脑的 one-api 账号设置所有权。重建 systemd/Nginx/续期配置，核对域名、IPA 地址及端口后启动。
 
-### 10.3 常见问题
+### 10.4 常见问题
 
 | 现象 | 检查方法 |
 | --- | --- |
@@ -615,5 +659,34 @@ sudo systemctl status one-api --no-pager
 | 重启后会话失效 | 保留固定 SESSION_SECRET |
 | database is locked | 确认旧实例已停且只有一个应用进程使用该库 |
 | 找不到服务 | 本文使用系统服务，命令为 sudo systemctl，而非 systemctl --user |
+
+### 10.5 使用第三方工具查看和编辑 SQLite
+
+SQLite 是文件数据库，可以通过第三方工具打开、查询和修改。优先推荐以下桌面工具，不需要在应用服务器安装图形界面：
+
+| 工具 | 适合场景 |
+| --- | --- |
+| [DB Browser for SQLite](https://sqlitebrowser.org/) | 首选，界面直观，支持浏览、编辑表数据和执行 SQL |
+| [Letos，原 SQLiteStudio](https://letos.org/) | 专注 SQLite，支持跨平台及便携运行 |
+| [DBeaver Community](https://dbeaver.io/about/) | 同时管理 SQLite、MySQL 等多种数据库；编辑功能见[官方说明](https://dbeaver.com/docs/dbeaver/Data-Viewing-and-Editing/) |
+
+查看数据时，先按 10.2 生成一致备份，再用工具打开副本。修改实际数据时遵循以下步骤：
+
+1. 确认实际运行配置中的 `SQLITE_PATH`，不要误选源码目录中的旧数据库。
+2. 停止应用，并保存可恢复的数据库及相关旁文件备份。
+3. 打开数据库或其工作副本，编辑后执行工具的保存或提交操作。
+4. 关闭工具及数据库连接。若编辑后复制回服务器，保持应用停止，不能覆盖此期间已产生新业务数据的数据库；目标旧旁文件须与原库一起妥善保存，不能与新库混用。
+5. 按第 7 节恢复服务账号的文件所有权和访问权限，再启动应用。
+
+远端 SQLite 不能像 MySQL 一样通过数据库端口连接；可在受控复制的副本上操作。不要把业务库上传到公共在线编辑网站。系统级服务与用户级服务的配置位置及启停命令不同，以实际部署方式为准。
+
+直接编辑会绕过应用业务逻辑，需理解对应字段的含义：
+
+- LDAP 身份标识、登录名、角色和目录锁定字段受同步控制，手工修改可能破坏账号映射或被后续同步覆盖；目录用户与组角色在 LDAP 管理端维护。
+- 本地密码字段保存哈希，不填写明文；LDAP 密码仍由目录服务管理。
+- 额度字段使用系统内部计量单位，不直接等同于金额；充值、额度和本地启用/禁用优先在应用后台执行。
+- 启用 Redis 时，直接 SQL 修改不会触发应用缓存失效；重启应用也不保证清除 Redis 中的旧数据，应结合对应字段处理缓存。
+
+工具适合查询、分析和维护；修改结构前另行评估自动迁移及数据兼容性。本文仅推荐工具，未安装软件或执行数据库编辑。
 
 服务与账号参数依据 Ubuntu 24.04 自带的 `man systemd.service`、`man systemd.exec`、`man useradd`。本文命令用于管理员按步骤部署，修改文档不代表已在本机执行账号创建或服务切换。
